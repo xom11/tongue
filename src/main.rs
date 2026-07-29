@@ -107,3 +107,21 @@ fn snapshot(cfg: &config::Config) -> anyhow::Result<status::Snapshot> {
     let (mode, drift) = status::infer_mac(ime_on, &layout, &cfg.macos.source_vi, &cfg.macos.source_zh);
     Ok(status::Snapshot { mode, layout: Some(layout), ime_on, drift })
 }
+
+#[cfg(windows)]
+fn build_backends(
+    cfg: &config::Config,
+) -> anyhow::Result<(Box<dyn backend::Layout>, Box<dyn backend::Ime>)> {
+    Ok((
+        Box::new(backend::NoopLayout),
+        Box::new(backend::windows::vkey::VkeyIme { exe_path_override: cfg.windows.vkey_path.clone() }),
+    ))
+}
+
+#[cfg(windows)]
+fn snapshot(cfg: &config::Config) -> anyhow::Result<status::Snapshot> {
+    use backend::Ime as _;
+    let vkey = backend::windows::vkey::VkeyIme { exe_path_override: cfg.windows.vkey_path.clone() };
+    let ime_on = vkey.is_on()?;
+    Ok(status::Snapshot { mode: status::infer_win(ime_on), layout: None, ime_on, drift: None })
+}
