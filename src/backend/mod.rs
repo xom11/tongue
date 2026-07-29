@@ -1,6 +1,8 @@
 //! Hai cần gạt của một mode. Impl thật nằm trong macos/ và windows/;
 //! reconcile chỉ nhìn thấy trait nên test được bằng mock.
 
+pub mod vkey_shm;
+
 pub trait Layout {
     fn current(&self) -> anyhow::Result<String>;
     fn select(&self, id: &str) -> anyhow::Result<()>;
