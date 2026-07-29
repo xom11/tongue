@@ -104,3 +104,12 @@ pub fn run(fix: bool, cfg: &Config) -> Result<bool> {
 
     Ok(print_findings(&fs))
 }
+
+#[cfg(windows)]
+pub fn run(_fix: bool, _cfg: &Config) -> Result<bool> {
+    // Task 10 thay stub này bằng bản khám VKey thật.
+    Ok(print_findings(&[Finding {
+        level: Level::Warn,
+        msg: "doctor chưa hỗ trợ trên Windows ở bản này".into(),
+    }]))
+}
