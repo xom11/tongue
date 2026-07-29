@@ -1,5 +1,6 @@
 mod backend;
 mod config;
+mod doctor;
 mod mode;
 mod reconcile;
 mod status;
@@ -32,6 +33,11 @@ enum Cmd {
         #[arg(long)]
         json: bool,
     },
+    /// Khám môi trường; --fix sửa những gì an toàn (ghim perAppMode=0...)
+    Doctor {
+        #[arg(long)]
+        fix: bool,
+    },
 }
 
 fn main() -> std::process::ExitCode {
@@ -59,6 +65,12 @@ fn run() -> anyhow::Result<()> {
         Some(Cmd::Status { json }) => {
             let s = snapshot(&cfg)?;
             print!("{}", if json { status::render_json(&s) } else { status::render_human(&s) });
+            Ok(())
+        }
+        Some(Cmd::Doctor { fix }) => {
+            if doctor::run(fix, &cfg)? {
+                std::process::exit(2);
+            }
             Ok(())
         }
         None => {
