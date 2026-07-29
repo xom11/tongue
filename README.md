@@ -1,47 +1,242 @@
 # tongue
 
-CLI chuyển chế độ gõ `vi | en | zh` — một lệnh nguyên tử đổi cả layout hệ
-thống lẫn bộ gõ ngoài, có verify. macOS điều khiển [GoNhanh], Windows điều
-khiển [VKey].
+CLI chuyển chế độ gõ `vi | en | zh` bằng **một thao tác duy nhất** — đổi cả layout
+bàn phím hệ thống lẫn bộ gõ tiếng Việt, rồi *kiểm tra lại* xem máy có thật sự đổi
+chưa mới báo thành công.
 
-    tongue vi        # tiếng Việt (bộ gõ ngoài bật)
-    tongue en        # tiếng Anh  (bộ gõ ngoài tắt)
-    tongue zh        # tiếng Trung (chỉ macOS: layout Pinyin)
-    tongue           # in mode hiện tại
+    tongue vi        # tiếng Việt
+    tongue en        # tiếng Anh
+    tongue zh        # tiếng Trung (chỉ macOS)
+    tongue           # in mode hiện tại: "vi"
     tongue status    # chi tiết (--json cho script)
-    tongue doctor    # khám môi trường; --fix sửa những gì an toàn
+    tongue doctor    # khám môi trường (--fix sửa những gì an toàn)
 
-Exit code: `0` đích đã verify khớp · `1` verify trượt · `2` lỗi môi trường.
+macOS dùng [GoNhanh] (mặc định), bộ gõ ngoài bất kỳ, hoặc bộ gõ tiếng Việt có sẵn
+của macOS. Windows dùng [VKey].
 
-Lần đầu dùng trên máy mới: chạy `tongue doctor --fix`.
+## Vì sao cần
 
-## Chọn bộ gõ (macOS)
+Đổi chế độ gõ trên macOS thực ra là hai việc rời nhau: layout bàn phím của hệ
+thống, và bật/tắt bộ gõ tiếng Việt. Hai thứ đó lệch nhau lúc nào không biết — và
+bạn chỉ phát hiện sau khi đã gõ ra một dòng chữ hỏng.
 
-Vắng config thì dùng GoNhanh — không cần làm gì. Muốn bộ gõ khác thì sửa
-`~/.config/tongue/config.toml`, không phải sửa code:
+`tongue` gộp chúng thành một trạng thái đích duy nhất, áp xong thì đọc lại trạng
+thái thật của máy để xác nhận. Không daemon, không file state: nguồn chân lý luôn
+là hệ thống, nên không bao giờ có chuyện "tool tưởng đang ở `vi`".
+
+## Cài đặt
+
+**Nix (flake)** — cách được hỗ trợ chính, chỉ macOS (`aarch64-darwin`,
+`x86_64-darwin`):
+
+```nix
+{
+  inputs.tongue.url = "github:xom11/tongue";
+}
+```
+
+Rồi lấy package theo một trong hai cách:
+
+```nix
+# a) trực tiếp
+home.packages = [ inputs.tongue.packages.${pkgs.system}.tongue ];
+
+# b) qua overlay, để dùng được `pkgs.tongue` ở mọi nơi
+nixpkgs.overlays = [ inputs.tongue.overlays.default ];
+home.packages = [ pkgs.tongue ];
+```
+
+**Không dùng nix:**
+
+```bash
+cargo install --path .        # → ~/.cargo/bin/tongue
+```
+
+**Windows:** tải `tongue.exe` từ artifact `tongue-windows` của CI — không cần cài
+Rust trên máy đó.
+
+## Lần đầu chạy
+
+```bash
+tongue doctor --fix
+```
+
+Đọc kết quả theo icon: `✓` ổn · `⚠` nên xử lý nhưng vẫn chạy được · `✗` phải sửa
+mới dùng được. Những gì `--fix` **không** tự làm được (như bật input source trong
+System Settings) sẽ được nói rõ trong thông báo.
+
+## Exit code
+
+Đây là hợp đồng với script và hotkey gọi tới:
+
+| Code | Nghĩa | Nên làm gì |
+|------|-------|-----------|
+| `0` | đích đã verify khớp | không cần làm gì |
+| `1` | `VerifyFailed` — lệnh đã gửi nhưng máy không nhúc nhích | chạy `tongue doctor` |
+| `2` | lỗi môi trường: thiếu app, input source chưa bật, config sai, `tongue zh` trên Windows | đọc thông báo, thường nói rõ thiếu gì |
+
+Các lệnh đều **idempotent**: gọi `tongue vi` năm lần liên tiếp cho cùng một kết
+quả và không sinh thêm process nào — bấm nhầm hotkey là vô hại.
+
+## Cấu hình
+
+Vắng file config thì mọi thứ chạy với mặc định (GoNhanh trên macOS, VKey trên
+Windows). Muốn khác thì tạo:
+
+- macOS: `~/.config/tongue/config.toml`
+- Windows: `%APPDATA%\tongue\config.toml`
+
+### Chọn bộ gõ (macOS)
+
+Bộ gõ nào lo tiếng Việt là **tuỳ chọn cấu hình, không phải sửa code**:
 
 ```toml
-# Bộ gõ ngoài bất kỳ chỉ cần bật/tắt bằng process (EVKey, OpenKey...)
+# Bộ gõ ngoài bất kỳ chỉ cần bật/tắt bằng process — EVKey, OpenKey...
 [macos]
 backend = "app"
 app_name = "EVKey"
 ```
 
 ```toml
-# Bộ gõ tiếng Việt có sẵn của macOS — không cài gì thêm, không process nào chạy nền
+# Bộ gõ tiếng Việt có sẵn của macOS: không cài gì thêm, không process chạy nền
 [macos]
 backend = "system"
 source_vi = "com.apple.inputmethod.VietnameseIM.VietnameseTelex"
 ```
 
-Với `backend = "system"` thì `vi` và `en` là hai input source khác nhau
-(`source_en` mặc định là ABC), còn bộ gõ ngoài thì giữ nguyên layout và chỉ
-bật/tắt app. `tongue doctor` cảnh báo nếu hai bộ gõ chạy chồng lên nhau.
+| `backend` | Cơ chế | Ghi chú |
+|-----------|--------|---------|
+| `gonhanh` (mặc định) | ghi defaults + `open` / `killall` | khám luôn bẫy `perAppMode` |
+| `app` | `open` / `killall` / `pgrep` | chỉ cần `app_name`, không đụng defaults của ai |
+| `system` | đổi input source, không có app ngoài | nhanh nhất, không có process nền |
 
-Bộ gõ có kênh điều khiển riêng (không quy về bật/tắt process) thì cần một impl
-`Ime` mới — xem `src/backend/macos/` và `CLAUDE.md`.
+Hai mô hình này khác nhau ở chỗ **cái gì phân biệt `vi` với `en`**: bộ gõ ngoài
+giữ nguyên layout ABC và dùng bit bật/tắt của app, còn bộ gõ hệ thống thì chính
+layout là thứ phân biệt. Vì vậy `backend = "system"` cần `source_vi` khác
+`source_en`; `tongue doctor` sẽ báo `✗` nếu bạn để chúng trùng nhau (lúc đó
+`tongue vi` và `tongue en` sẽ không làm gì cả).
 
-Thiết kế + bằng chứng source: `docs/superpowers/specs/2026-07-29-tongue-design.md`.
+`doctor` cũng cảnh báo nếu hai bộ gõ chạy chồng lên nhau — ví dụ đã chuyển sang
+`backend = "system"` nhưng GoNhanh vẫn còn trong Login Items.
+
+### Tất cả tuỳ chọn
+
+```toml
+[macos]
+backend   = "gonhanh"                            # gonhanh | app | system
+strategy  = "process"                            # v1 chỉ có "process"
+app_name  = "GoNhanh"                            # tên app cho backend gonhanh/app
+source_vi = "com.apple.keylayout.ABC"
+source_en = "com.apple.keylayout.ABC"            # mặc định trùng source_vi
+source_zh = "com.apple.inputmethod.SCIM.ITABC"
+
+[windows]
+vkey_path = ""                                   # rỗng = tự dò trong WinGet Packages
+
+[verify]
+timeout_ms = 1000                                # tối đa chờ máy đổi xong
+poll_ms    = 50                                  # nhịp đọc lại trạng thái
+```
+
+Thiếu khoá nào thì khoá đó lấy mặc định — không cần chép cả khối.
+
+Không chắc ID input source? Liệt kê những cái đang bật:
+
+```bash
+defaults read com.apple.HIToolbox AppleEnabledInputSources
+```
+
+## Nối vào phím tắt
+
+`tongue` cố ý **không** có daemon hay hotkey — nó chỉ là CLI, việc bind phím dành
+cho công cụ bạn đã dùng (kanata, skhd, Karabiner, Hammerspoon…). Ví dụ với skhd:
+
+```
+cmd - space        : tongue vi
+cmd + shift - space: tongue en
+```
+
+Vì lệnh idempotent và không có state, bạn có thể gọi từ nhiều nguồn cùng lúc mà
+không sợ lệch nhau.
+
+## Cách nó hoạt động
+
+Mỗi mode là một **trạng thái đích khai báo** `(layout, bit bộ gõ)`. Chuyển mode =
+reconcile: đọc trạng thái thật → áp đúng phần đang lệch → đọc lại tới khi khớp
+hoặc hết `timeout_ms`.
+
+```
+tongue vi
+  ├─ đọc config (vắng file = mặc định)
+  ├─ tra bảng mode → Desired { layout, ime_on }
+  └─ vòng reconcile:
+       đọc layout + bit bộ gõ thật
+       khớp cả hai?  → exit 0
+       quá hạn?      → VerifyFailed, exit 1
+       áp phần lệch, chờ poll_ms, lặp lại
+```
+
+Việc áp lại mỗi vòng là có chủ ý: `TISSelectInputSource` với input source CJK đôi
+khi nhận lệnh nhưng chưa đổi ngay, nên retry chính là cách xử lý.
+
+Thời gian thực đo trên macOS: ~50ms khi trạng thái đã đúng sẵn (thoát ngay vòng
+đầu), ~90ms với `backend = "system"`, ~150–240ms khi phải bật/tắt process thật.
+
+## Bản đồ mã nguồn
+
+```
+src/mode.rs        bảng mode → trạng thái đích (thuần, không chạm OS)
+src/reconcile.rs   vòng áp + verify; VerifyFailed → exit 1
+src/status.rs      suy mode ngược từ trạng thái thật; render human/json
+src/config.rs      đọc config.toml; vắng file = mặc định
+src/doctor.rs      in kết quả khám; phần khám riêng nằm ở từng backend
+src/backend/
+  mod.rs           trait Layout {current, select} + trait Ime {is_on, set, diagnose}
+  macos/tis.rs     FFI TIS API (framework Carbon) — đổi input source
+  macos/app.rs     AppIme generic: pgrep / open / killall
+  macos/gonhanh.rs AppIme + defaults; ôm luôn bẫy perAppMode
+  macos/system.rs  SystemIme: không app ngoài, tiếng Việt từ input source macOS
+  windows/vkey.rs  FindWindow + PostMessage + đọc shared memory
+  vkey_shm.rs      parser bytes shared memory VKey (thuần, test được mọi OS)
+```
+
+Toàn bộ phần quyết định là code thuần và có test chạy trên mọi OS; chỉ ba file
+`tis.rs`, `gonhanh.rs`/`app.rs`, `vkey.rs` là thật sự chạm hệ thống.
+
+**Thêm bộ gõ mới:** nếu nó chỉ cần bật/tắt bằng process thì không cần code —
+dùng `backend = "app"`. Nếu nó có kênh điều khiển riêng thì thêm một file trong
+`src/backend/macos/` impl `trait Ime` và thêm một nhánh vào `make_ime` trong
+`src/main.rs`. Không phải sửa chỗ nào khác.
+
+## Phát triển
+
+```bash
+nix develop                                     # cargo, clippy, rustfmt, rust-analyzer
+cargo test
+cargo fmt --check
+cargo clippy --all-targets -- -D warnings
+cargo clippy --all-targets --target x86_64-pc-windows-msvc -- -D warnings
+nix build .#tongue && ./result/bin/tongue --help
+```
+
+Lệnh clippy cho target Windows là **bắt buộc** dù bạn ngồi trên mac: hai target
+có dead-code khác nhau, đã có tiền lệ CI Windows đỏ mà máy mac không hề hay biết.
+Không cần linker MSVC, chỉ cần `rustup target add x86_64-pc-windows-msvc` một lần.
+
+`nix build` lấy source từ git, nên file mới **phải `git add`** trước, không thì
+nix không thấy và báo "file not found for module".
+
+Test tự động không chạm hệ thống. Muốn thử thật thì dùng chính CLI và nhớ kết
+thúc bằng `tongue vi` để khôi phục.
+
+## Ngoài phạm vi hiện tại
+
+Auto-switch theo app đang focus, daemon/hotkey tích hợp sẵn, Linux, và các
+strategy `hotkey`/`notify` cho GoNhanh — đã ghi trong spec, chưa làm.
+
+Chi tiết thiết kế kèm bằng chứng `file:line` từ source của cả hai bộ gõ:
+`docs/superpowers/specs/2026-07-29-tongue-design.md`. Quy ước cho người sửa code
+(và cho AI): `CLAUDE.md`.
 
 [GoNhanh]: https://github.com/khaphanspace/gonhanh.org
 [VKey]: https://github.com/phatMT97/VKey
