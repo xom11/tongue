@@ -42,7 +42,10 @@ pub fn reconcile(
     timeout: Duration,
     poll: Duration,
 ) -> anyhow::Result<()> {
-    let deadline = Instant::now() + timeout;
+    // Chốt tạm trước vòng lặp; được reset lại ngay sau lượt apply đầu tiên (xem dưới) —
+    // lượt apply đầu có thể block lâu (VKey cold-start ensure_running tới 5s), nếu tính
+    // đồng hồ verify từ trước đó thì ngân sách verify bị lượt apply ăn gần hết.
+    let mut deadline = Instant::now() + timeout;
     let mut applied = false;
     loop {
         let cur_layout = match &desired.layout {
@@ -79,7 +82,12 @@ pub fn reconcile(
         if !ime_ok {
             ime.set(desired.ime_on)?;
         }
-        applied = true;
+        // Lượt apply đầu tiên vừa xong (có thể đã block lâu) — đồng hồ verify chỉ nên
+        // bắt đầu tính từ đây, không phải từ trước vòng lặp.
+        if !applied {
+            deadline = Instant::now() + timeout;
+            applied = true;
+        }
         std::thread::sleep(poll);
     }
 }
@@ -193,6 +201,48 @@ mod tests {
             .expect("phải là VerifyFailed");
         assert!(vf.ime_expected);
         assert!(!vf.ime_actual);
+    }
+
+    /// Lần select() đầu tiên ngủ lâu hơn timeout (mô phỏng ensure_running cold-start
+    /// của VKey ~5s) NHƯNG áp thành công — chỉ cần thêm 1 select nữa mới thật sự đổi
+    /// (mô phỏng quirk CJK, giống FakeLayout ở trên). Dùng để chứng minh đồng hồ
+    /// verify phải tính từ SAU khi áp xong, không phải từ trước vòng lặp.
+    struct SlowFirstApplyLayout {
+        current: RefCell<String>,
+        selects_done: Cell<u32>,
+    }
+    impl Layout for SlowFirstApplyLayout {
+        fn current(&self) -> anyhow::Result<String> {
+            Ok(self.current.borrow().clone())
+        }
+        fn select(&self, id: &str) -> anyhow::Result<()> {
+            let n = self.selects_done.get();
+            if n == 0 {
+                std::thread::sleep(ms(30));
+            }
+            self.selects_done.set(n + 1);
+            if n + 1 >= 2 {
+                *self.current.borrow_mut() = id.into();
+            }
+            Ok(())
+        }
+    }
+
+    #[test]
+    fn ap_dau_cham_hon_timeout_van_ok_vi_deadline_tinh_tu_sau_khi_ap() {
+        // timeout 20ms < 30ms lượt apply đầu, poll 1ms. Nếu deadline vẫn chốt từ
+        // trước vòng lặp (bug cũ), lượt verify thứ hai sẽ thấy đồng hồ đã hết ngay
+        // sau lượt apply đầu và trả VerifyFailed dù đang áp thành công dở chừng.
+        let l = SlowFirstApplyLayout {
+            current: RefCell::new("cu".into()),
+            selects_done: Cell::new(0),
+        };
+        let i = FakeIme {
+            on: Cell::new(true),
+            stuck: true,
+        }; // ime đã đúng sẵn — chỉ layout cần verify
+        reconcile(&l, &i, &des(Some("moi"), true), ms(20), ms(1)).unwrap();
+        assert_eq!(*l.current.borrow(), "moi");
     }
 
     #[test]

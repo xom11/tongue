@@ -90,6 +90,22 @@ pub fn run(fix: bool, cfg: &Config) -> Result<bool> {
         };
         if g.is_on()? {
             g.set(false)?;
+            // killall (trong GonhanhIme::set) chỉ gửi SIGTERM rồi trả về ngay —
+            // process chưa chắc đã thoát. set(true) gọi liền sau đó sẽ tự thấy
+            // "process còn sống" và bỏ qua `open`, khiến GoNhanh chết hẳn thay vì
+            // được restart. Phải đợi is_on() thật sự về false trước khi bật lại.
+            let wait_deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+            loop {
+                if !g.is_on()? {
+                    break;
+                }
+                if std::time::Instant::now() >= wait_deadline {
+                    anyhow::bail!(
+                        "GoNhanh không thoát sau killall trong 2s — tắt thủ công rồi chạy lại `tongue doctor --fix`"
+                    );
+                }
+                std::thread::sleep(std::time::Duration::from_millis(50));
+            }
             g.set(true)?;
         }
         fs.push(Finding {

@@ -7,6 +7,9 @@ pub struct Snapshot {
     pub drift: Option<String>,
 }
 
+// Call site thật nằm trong main.rs dưới cfg(target_os = "macos"); test riêng chạy
+// trên mọi OS — trên build windows đây là dead code hợp lệ.
+#[allow(dead_code)]
 pub fn infer_mac(
     ime_on: bool,
     layout: &str,

@@ -9,6 +9,10 @@ pub enum Mode {
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Platform {
+    // Chỉ được construct thật trong Platform::current() dưới cfg(target_os = "macos"),
+    // hoặc trong test của chính file này (desired() vốn thuần, test cross-platform trên
+    // mọi OS) — trên build windows đây là dead code hợp lệ.
+    #[allow(dead_code)]
     MacOs,
     // Chỉ được construct thật trong Platform::current() dưới cfg(windows), hoặc trong
     // test của chính file này (desired() vốn thuần, test cross-platform trên mọi OS).

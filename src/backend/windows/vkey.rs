@@ -2,8 +2,8 @@
 //! - set mode:  PostMessage(WM_USER+100, 1|0) tới cửa sổ ẩn "VKeyTrayClass"
 //!   (idempotent, đi đúng đường hotkey nên smart-switch không ghi đè lại)
 //! - đọc mode:  section "Local\VKeySharedState" (magic + version + flags)
-//! VKey KHÔNG bao giờ bị kill ở luồng thường — nhờ vậy không xáo hook
-//! WH_KEYBOARD_LL với kanata.
+//!   VKey KHÔNG bao giờ bị kill ở luồng thường — nhờ vậy không xáo hook
+//!   WH_KEYBOARD_LL với kanata.
 
 use crate::backend::{vkey_shm, Ime};
 use anyhow::{bail, Context, Result};
@@ -46,6 +46,11 @@ pub fn read_state() -> Result<Option<bool>> {
             CloseHandle(h);
             bail!("MapViewOfFile thất bại");
         }
+        // Đọc 20 byte không check kích thước view: MapViewOfFile luôn map tròn lên
+        // ít nhất 1 trang bộ nhớ (4KB trên x86/x64), nên section dù khai báo bé hơn
+        // 20 byte vẫn không đọc ra ngoài trang được map. Nếu section thật sự chứa
+        // rác/khác định dạng, parse_vietnamese_flag chặn lại qua kiểm tra magic +
+        // version trước khi đọc flags.
         let bytes = std::slice::from_raw_parts(view.Value as *const u8, 20);
         let parsed = vkey_shm::parse_vietnamese_flag(bytes);
         UnmapViewOfFile(view);

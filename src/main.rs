@@ -46,6 +46,7 @@ fn main() -> std::process::ExitCode {
         Err(e) => {
             eprintln!("tongue: {e:#}");
             if e.downcast_ref::<reconcile::VerifyFailed>().is_some() {
+                eprintln!("tongue: chạy `tongue doctor` để khám nguyên nhân");
                 std::process::ExitCode::from(1)
             } else {
                 std::process::ExitCode::from(2)
