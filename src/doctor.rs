@@ -106,10 +106,76 @@ pub fn run(fix: bool, cfg: &Config) -> Result<bool> {
 }
 
 #[cfg(windows)]
-pub fn run(_fix: bool, _cfg: &Config) -> Result<bool> {
-    // Task 10 thay stub này bằng bản khám VKey thật.
-    Ok(print_findings(&[Finding {
-        level: Level::Warn,
-        msg: "doctor chưa hỗ trợ trên Windows ở bản này".into(),
-    }]))
+pub fn run(_fix: bool, cfg: &Config) -> Result<bool> {
+    use crate::backend::windows::vkey::{read_state, VkeyIme};
+
+    let mut fs = Vec::new();
+    let ime = VkeyIme { exe_path_override: cfg.windows.vkey_path.clone() };
+
+    // 1. VKey.exe tìm được?
+    match ime.discover_exe() {
+        Ok(p) => fs.push(Finding { level: Level::Ok, msg: format!("VKey.exe: {}", p.display()) }),
+        Err(e) => fs.push(Finding { level: Level::Fail, msg: format!("{e:#}") }),
+    }
+
+    // 2. đang chạy? shared memory hợp lệ?
+    match read_state() {
+        Ok(Some(vi)) => fs.push(Finding {
+            level: Level::Ok,
+            msg: format!("VKey đang chạy, mode hiện tại = {}", if vi { "vi" } else { "en" }),
+        }),
+        Ok(None) => fs.push(Finding {
+            level: Level::Warn,
+            msg: "VKey chưa chạy — `tongue vi` sẽ tự bật".into(),
+        }),
+        Err(e) => fs.push(Finding {
+            level: Level::Fail,
+            msg: format!("shared memory không đọc được: {e:#}"),
+        }),
+    }
+
+    // 3. config.toml của VKey: các cờ giành lái với tongue
+    match vkey_config(&ime) {
+        Some(Ok(v)) => {
+            let get = |t: &str, k: &str| {
+                v.get(t).and_then(|x| x.get(k)).and_then(|b| b.as_bool()).unwrap_or(false)
+            };
+            if get("features", "smart_switch") {
+                fs.push(Finding {
+                    level: Level::Warn,
+                    msg: "smart_switch đang bật — VKey tự đổi mode theo app, giành lái với tongue; cân nhắc tắt trong Settings của VKey".into(),
+                });
+            } else {
+                fs.push(Finding { level: Level::Ok, msg: "smart_switch tắt".into() });
+            }
+            if get("system", "run_as_admin") {
+                fs.push(Finding {
+                    level: Level::Warn,
+                    msg: "run_as_admin đang bật — UIPI sẽ nuốt lệnh set mode của tongue; cân nhắc tắt".into(),
+                });
+            } else {
+                fs.push(Finding { level: Level::Ok, msg: "run_as_admin tắt".into() });
+            }
+        }
+        Some(Err(e)) => fs.push(Finding { level: Level::Warn, msg: format!("config.toml của VKey không parse được: {e:#}") }),
+        None => fs.push(Finding { level: Level::Warn, msg: "không tìm thấy config.toml của VKey".into() }),
+    }
+
+    Ok(print_findings(&fs))
+}
+
+#[cfg(windows)]
+fn vkey_config(ime: &crate::backend::windows::vkey::VkeyIme) -> Option<anyhow::Result<toml::Value>> {
+    // VKey ưu tiên config cạnh exe; fallback %APPDATA%\VKey\config.toml
+    let mut candidates = Vec::new();
+    if let Ok(exe) = ime.discover_exe() {
+        if let Some(dir) = exe.parent() {
+            candidates.push(dir.join("config.toml"));
+        }
+    }
+    if let Ok(appdata) = std::env::var("APPDATA") {
+        candidates.push(std::path::Path::new(&appdata).join(r"VKey\config.toml"));
+    }
+    let path = candidates.into_iter().find(|p| p.exists())?;
+    Some(std::fs::read_to_string(&path).map_err(Into::into).and_then(|t| t.parse::<toml::Value>().map_err(Into::into)))
 }
