@@ -15,8 +15,14 @@ pub struct Config {
 #[derive(Debug, Deserialize, PartialEq)]
 #[serde(default)]
 pub struct MacosConfig {
+    /// Bộ gõ nào lo tiếng Việt: "gonhanh" | "app" | "system". Xem backend::macos.
+    pub backend: String,
+    /// Cách điều khiển bộ gõ đó. v1 chỉ có "process" (xem spec cho hotkey/notify).
     pub strategy: String,
     pub source_vi: String,
+    /// Mặc định TRÙNG source_vi — đúng cho mọi bộ gõ ngoài (layout giữ ABC, bit IME
+    /// phân biệt vi/en). Chỉ khác khi backend = "system".
+    pub source_en: String,
     pub source_zh: String,
     pub app_name: String,
 }
@@ -24,10 +30,22 @@ pub struct MacosConfig {
 impl Default for MacosConfig {
     fn default() -> Self {
         Self {
+            backend: "gonhanh".into(),
             strategy: "process".into(),
             source_vi: "com.apple.keylayout.ABC".into(),
+            source_en: "com.apple.keylayout.ABC".into(),
             source_zh: "com.apple.inputmethod.SCIM.ITABC".into(),
             app_name: "GoNhanh".into(),
+        }
+    }
+}
+
+impl MacosConfig {
+    pub fn sources(&self) -> crate::mode::Sources {
+        crate::mode::Sources {
+            vi: self.source_vi.clone(),
+            en: self.source_en.clone(),
+            zh: self.source_zh.clone(),
         }
     }
 }
@@ -89,6 +107,7 @@ mod tests {
     #[test]
     fn khong_co_gi_thi_ra_default() {
         let c = parse("").unwrap();
+        assert_eq!(c.macos.backend, "gonhanh");
         assert_eq!(c.macos.strategy, "process");
         assert_eq!(c.macos.source_vi, "com.apple.keylayout.ABC");
         assert_eq!(c.macos.source_zh, "com.apple.inputmethod.SCIM.ITABC");
@@ -96,6 +115,28 @@ mod tests {
         assert_eq!(c.windows.vkey_path, "");
         assert_eq!(c.verify.timeout_ms, 1000);
         assert_eq!(c.verify.poll_ms, 50);
+    }
+
+    /// Bất biến giữ tương thích ngược: mặc định vi và en dùng CHUNG một layout,
+    /// nên bit IME là thứ duy nhất phân biệt — đúng hành vi trước khi có `system`.
+    #[test]
+    fn mac_dinh_source_en_trung_source_vi() {
+        let c = parse("").unwrap();
+        assert_eq!(c.macos.source_en, c.macos.source_vi);
+        let s = c.macos.sources();
+        assert_eq!(s.vi, s.en);
+    }
+
+    #[test]
+    fn backend_system_khai_source_vi_rieng() {
+        let c = parse(
+            "[macos]\nbackend = \"system\"\nsource_vi = \"com.apple.inputmethod.VietnameseIM.VietnameseTelex\"\n",
+        )
+        .unwrap();
+        assert_eq!(c.macos.backend, "system");
+        let s = c.macos.sources();
+        assert_ne!(s.vi, s.en);
+        assert_eq!(s.en, "com.apple.keylayout.ABC");
     }
 
     #[test]

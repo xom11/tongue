@@ -32,98 +32,30 @@ pub fn print_findings(fs: &[Finding]) -> bool {
 }
 
 #[cfg(target_os = "macos")]
-pub fn run(fix: bool, cfg: &Config) -> Result<bool> {
-    use crate::backend::macos::{gonhanh::GonhanhIme, tis};
-    use crate::backend::Ime as _;
-    use std::process::Command;
+pub fn run(fix: bool, cfg: &Config, ime: &dyn crate::backend::Ime) -> Result<bool> {
+    use crate::backend::macos::tis;
 
-    let mut fs = Vec::new();
+    let mut fs = vec![Finding {
+        level: Level::Ok,
+        msg: format!("backend = {}", cfg.macos.backend),
+    }];
 
-    // 1. GoNhanh.app có mặt?
-    let home = std::env::var("HOME").unwrap_or_default();
-    let app_paths = [
-        "/Applications/GoNhanh.app".to_string(),
-        format!("{home}/Applications/GoNhanh.app"),
-    ];
-    if app_paths.iter().any(|p| std::path::Path::new(p).exists()) {
-        fs.push(Finding {
-            level: Level::Ok,
-            msg: "GoNhanh.app có mặt".into(),
-        });
-    } else {
-        fs.push(Finding {
-            level: Level::Fail,
-            msg: "không thấy GoNhanh.app trong /Applications hoặc ~/Applications".into(),
-        });
-    }
+    // 1. phần khám riêng của bộ gõ đang chọn — doctor không cần biết đó là ai
+    fs.extend(ime.diagnose(fix)?);
 
-    // 2. perAppMode phải = 0 — nếu bật, GoNhanh ghi trạng thái theo từng app
-    //    và key gonhanh.enabled thành đồ giả (bẫy đã xác minh trong source)
-    let out = Command::new("defaults")
-        .args(["read", "org.gonhanh.GoNhanh", "gonhanh.perAppMode"])
-        .output()?;
-    let val = String::from_utf8_lossy(&out.stdout).trim().to_string();
-    if !out.status.success() {
-        fs.push(Finding {
-            level: Level::Warn,
-            msg: "chưa đọc được defaults của GoNhanh — app đã chạy lần đầu chưa?".into(),
-        });
-    } else if val == "0" {
-        fs.push(Finding {
-            level: Level::Ok,
-            msg: "gonhanh.perAppMode = 0".into(),
-        });
-    } else if fix {
-        let st = Command::new("defaults")
-            .args([
-                "write",
-                "org.gonhanh.GoNhanh",
-                "gonhanh.perAppMode",
-                "-bool",
-                "NO",
-            ])
-            .status()?;
-        anyhow::ensure!(st.success(), "defaults write gonhanh.perAppMode thất bại");
-        // defaults chỉ được đọc lúc khởi động → restart để nạp
-        let g = GonhanhIme {
-            app_name: cfg.macos.app_name.clone(),
-        };
-        if g.is_on()? {
-            g.set(false)?;
-            // killall (trong GonhanhIme::set) chỉ gửi SIGTERM rồi trả về ngay —
-            // process chưa chắc đã thoát. set(true) gọi liền sau đó sẽ tự thấy
-            // "process còn sống" và bỏ qua `open`, khiến GoNhanh chết hẳn thay vì
-            // được restart. Phải đợi is_on() thật sự về false trước khi bật lại.
-            let wait_deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
-            loop {
-                if !g.is_on()? {
-                    break;
-                }
-                if std::time::Instant::now() >= wait_deadline {
-                    anyhow::bail!(
-                        "GoNhanh không thoát sau killall trong 2s — tắt thủ công rồi chạy lại `tongue doctor --fix`"
-                    );
-                }
-                std::thread::sleep(std::time::Duration::from_millis(50));
-            }
-            g.set(true)?;
-        }
-        fs.push(Finding {
-            level: Level::Ok,
-            msg: "đã ghim gonhanh.perAppMode=0 và restart GoNhanh".into(),
-        });
-    } else {
-        fs.push(Finding {
-            level: Level::Warn,
-            msg: "gonhanh.perAppMode đang bật — chạy `tongue doctor --fix` để ghim về 0 (không thì trạng thái enabled không tin được)".into(),
-        });
-    }
-
-    // 3. hai input source phải được bật trong System Settings
+    // 2. các input source phải được bật trong System Settings.
+    //    vi và en thường TRÙNG nhau (bộ gõ ngoài giữ nguyên layout) — khử trùng
+    //    để khỏi in hai dòng y hệt.
+    let mut seen = Vec::new();
     for (label, id) in [
         ("source_vi", &cfg.macos.source_vi),
+        ("source_en", &cfg.macos.source_en),
         ("source_zh", &cfg.macos.source_zh),
     ] {
+        if seen.contains(&id) {
+            continue;
+        }
+        seen.push(id);
         if tis::source_exists(id)? {
             fs.push(Finding {
                 level: Level::Ok,
@@ -137,6 +69,15 @@ pub fn run(fix: bool, cfg: &Config) -> Result<bool> {
                 ),
             });
         }
+    }
+
+    // 3. backend `system` mà vi và en trùng layout thì chuyển mode thành no-op —
+    //    lỗi cấu hình im lặng nhất có thể, phải bắt.
+    if cfg.macos.backend == "system" && cfg.macos.source_vi == cfg.macos.source_en {
+        fs.push(Finding {
+            level: Level::Fail,
+            msg: "backend = system nhưng source_vi trùng source_en — không có app ngoài thì layout là thứ duy nhất phân biệt vi/en, trùng nhau nghĩa là `tongue vi` và `tongue en` không làm gì cả".into(),
+        });
     }
 
     // 4. strategy
@@ -155,109 +96,9 @@ pub fn run(fix: bool, cfg: &Config) -> Result<bool> {
     Ok(print_findings(&fs))
 }
 
+// Windows không có layout để khám (US cố định) nên toàn bộ phần khám nằm trong
+// VkeyIme::diagnose — đối xứng với macOS, và doctor không cần biết VKey là gì.
 #[cfg(windows)]
-pub fn run(_fix: bool, cfg: &Config) -> Result<bool> {
-    use crate::backend::windows::vkey::{read_state, VkeyIme};
-
-    let mut fs = Vec::new();
-    let ime = VkeyIme {
-        exe_path_override: cfg.windows.vkey_path.clone(),
-    };
-
-    // 1. VKey.exe tìm được?
-    match ime.discover_exe() {
-        Ok(p) => fs.push(Finding {
-            level: Level::Ok,
-            msg: format!("VKey.exe: {}", p.display()),
-        }),
-        Err(e) => fs.push(Finding {
-            level: Level::Fail,
-            msg: format!("{e:#}"),
-        }),
-    }
-
-    // 2. đang chạy? shared memory hợp lệ?
-    match read_state() {
-        Ok(Some(vi)) => fs.push(Finding {
-            level: Level::Ok,
-            msg: format!(
-                "VKey đang chạy, mode hiện tại = {}",
-                if vi { "vi" } else { "en" }
-            ),
-        }),
-        Ok(None) => fs.push(Finding {
-            level: Level::Warn,
-            msg: "VKey chưa chạy — `tongue vi` sẽ tự bật".into(),
-        }),
-        Err(e) => fs.push(Finding {
-            level: Level::Fail,
-            msg: format!("shared memory không đọc được: {e:#}"),
-        }),
-    }
-
-    // 3. config.toml của VKey: các cờ giành lái với tongue
-    match vkey_config(&ime) {
-        Some(Ok(v)) => {
-            let get = |t: &str, k: &str| {
-                v.get(t)
-                    .and_then(|x| x.get(k))
-                    .and_then(|b| b.as_bool())
-                    .unwrap_or(false)
-            };
-            if get("features", "smart_switch") {
-                fs.push(Finding {
-                    level: Level::Warn,
-                    msg: "smart_switch đang bật — VKey tự đổi mode theo app, giành lái với tongue; cân nhắc tắt trong Settings của VKey".into(),
-                });
-            } else {
-                fs.push(Finding {
-                    level: Level::Ok,
-                    msg: "smart_switch tắt".into(),
-                });
-            }
-            if get("system", "run_as_admin") {
-                fs.push(Finding {
-                    level: Level::Warn,
-                    msg: "run_as_admin đang bật — UIPI sẽ nuốt lệnh set mode của tongue; cân nhắc tắt".into(),
-                });
-            } else {
-                fs.push(Finding {
-                    level: Level::Ok,
-                    msg: "run_as_admin tắt".into(),
-                });
-            }
-        }
-        Some(Err(e)) => fs.push(Finding {
-            level: Level::Warn,
-            msg: format!("config.toml của VKey không parse được: {e:#}"),
-        }),
-        None => fs.push(Finding {
-            level: Level::Warn,
-            msg: "không tìm thấy config.toml của VKey".into(),
-        }),
-    }
-
-    Ok(print_findings(&fs))
-}
-
-#[cfg(windows)]
-fn vkey_config(
-    ime: &crate::backend::windows::vkey::VkeyIme,
-) -> Option<anyhow::Result<toml::Value>> {
-    // VKey ưu tiên config cạnh exe; fallback %APPDATA%\VKey\config.toml
-    let mut candidates = Vec::new();
-    if let Ok(exe) = ime.discover_exe() {
-        if let Some(dir) = exe.parent() {
-            candidates.push(dir.join("config.toml"));
-        }
-    }
-    if let Ok(appdata) = std::env::var("APPDATA") {
-        candidates.push(std::path::Path::new(&appdata).join(r"VKey\config.toml"));
-    }
-    let path = candidates.into_iter().find(|p| p.exists())?;
-    Some(
-        std::fs::read_to_string(&path)
-            .map_err(Into::into)
-            .and_then(|t| t.parse::<toml::Value>().map_err(Into::into)),
-    )
+pub fn run(fix: bool, _cfg: &Config, ime: &dyn crate::backend::Ime) -> Result<bool> {
+    Ok(print_findings(&ime.diagnose(fix)?))
 }

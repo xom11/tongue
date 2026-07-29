@@ -16,7 +16,7 @@ Exit code: `0` = đích đã verify khớp · `1` = verify trượt (`VerifyFail
 ## Lệnh kiểm tra — chạy đủ TRƯỚC khi push
 
 ```bash
-cargo test                                                    # 23 unit test + 1 smoke ignored
+cargo test                                                    # 31 unit test + 1 smoke ignored
 cargo fmt --check
 cargo clippy --all-targets -- -D warnings                     # macOS
 cargo clippy --all-targets --target x86_64-pc-windows-msvc -- -D warnings   # BẮT BUỘC
@@ -45,25 +45,35 @@ artifact `tongue-windows` (tongue.exe) — nguồn binary cho máy win không c�
 Mỗi mode là một **trạng thái đích khai báo** `(layout, bit IME)`; chuyển mode =
 reconcile: đọc trạng thái thật → áp phần lệch → poll verify tới timeout.
 
-| Mode | macOS: source | macOS: GoNhanh | Windows: layout | Windows: VKey |
-|------|---------------|----------------|-----------------|---------------|
-| `vi` | ABC           | bật            | US (không đụng) | bật           |
-| `en` | ABC           | tắt            | US (không đụng) | tắt           |
-| `zh` | Pinyin        | tắt            | —               | —             |
+Bộ gõ nào lo tiếng Việt là **tuỳ chọn cấu hình**, không phải hằng số trong code:
+`[macos] backend = "gonhanh" | "app" | "system"` (mặc định `gonhanh`).
+
+| Mode | mac `gonhanh`/`app` | mac `system` | Windows: layout | Windows: VKey |
+|------|---------------------|--------------|-----------------|---------------|
+| `vi` | ABC + app bật       | Telex, không app | US (không đụng) | bật        |
+| `en` | ABC + app tắt       | ABC, không app   | US (không đụng) | tắt        |
+| `zh` | Pinyin + app tắt    | Pinyin           | —               | —          |
+
+Hai cột mac là hai mô hình khác nhau: bộ gõ ngoài giữ nguyên layout và dùng **bit
+IME** phân biệt vi/en (`source_vi == source_en`), còn bộ gõ hệ thống dùng chính
+**layout** để phân biệt (`source_vi != source_en`, bit IME luôn tắt). `source_en`
+mặc định trùng `source_vi` nên mô hình cũ là trường hợp riêng, không cần cấu hình.
 
 ```
-src/mode.rs        # bảng mode → Desired {layout: Option<String>, ime_on} — thuần
+src/mode.rs        # bảng mode → Desired {layout, ime_on} + struct Sources — thuần
 src/reconcile.rs   # vòng áp + verify sau 2 trait; VerifyFailed → exit 1
 src/backend/
-  mod.rs           # trait Layout {current, select}, trait Ime {is_on, set}; NoopLayout (win)
+  mod.rs           # trait Layout {current, select}, trait Ime {is_on, set, diagnose}; NoopLayout (win)
   vkey_shm.rs      # parser bytes shared memory VKey — thuần, test fixture mọi OS
   macos/tis.rs     # FFI TIS API (link framework Carbon) — đổi input source
-  macos/gonhanh.rs # process-là-bit: bật = defaults write + open, tắt = killall
-  windows/vkey.rs  # FindWindow + PostMessage + đọc shared memory
+  macos/app.rs     # helper pgrep/open/killall + AppIme generic (EVKey, OpenKey...)
+  macos/gonhanh.rs # AppIme + defaults write; diagnose() ôm luôn bẫy perAppMode
+  macos/system.rs  # SystemIme: không app ngoài, tiếng Việt từ input source macOS
+  windows/vkey.rs  # FindWindow + PostMessage + shared memory; diagnose() ôm 3 check VKey
 src/config.rs      # ~/.config/tongue/config.toml (mac) / %APPDATA%\tongue (win); vắng file = default
 src/status.rs      # suy mode từ trạng thái thật; render human/json
-src/doctor.rs      # khám môi trường; --fix chỉ sửa thứ an toàn; Fail → exit 2
-src/main.rs        # clap; build_backends/snapshot cfg-gate theo OS
+src/doctor.rs      # in Finding; phần khám riêng nằm ở diagnose() của backend
+src/main.rs        # clap; make_ime/make_layout/snapshot cfg-gate theo OS
 ```
 
 ## Bất biến — đổi là hỏng, đọc kỹ trước khi sửa
@@ -95,7 +105,20 @@ reset là `tongue vi` đầu tiên trên win exit 1 giả.
 
 **doctor --fix restart GoNhanh phải chờ process chết thật** giữa `set(false)`
 và `set(true)` — killall trả về khi SIGTERM được GỬI, không phải khi process
-chết; bỏ vòng chờ là "restart" thành "giết hẳn".
+chết; bỏ vòng chờ là "restart" thành "giết hẳn". Vòng chờ đó nay nằm ở
+`GonhanhIme::restart`.
+
+**`SystemIme::is_on()` phải LUÔN trả false**, kể cả khi có app bộ gõ khác đang
+chạy. reconcile dùng nó làm đích: báo true là chờ một cần gạt vĩnh viễn không
+nhúc nhích rồi trả `VerifyFailed` giả. Việc phát hiện "còn app chạy chồng" là
+của `diagnose()` — chẩn đoán môi trường, không phải trạng thái đích. Cùng lý do,
+`status` KHÔNG suy drift từ `ime_on` ở nhánh `source_vi != source_en`.
+
+**Thêm bộ gõ mới = thêm một file + một nhánh `match` trong `make_ime`.** Ba
+đường (switch, snapshot, doctor) đều đi qua đúng một cửa đó; phần khám riêng
+nằm trong `diagnose()` của chính backend, không rải ra `doctor.rs`. Bộ gõ nào
+chỉ cần bật/tắt bằng process thì KHÔNG cần code mới — đặt `backend = "app"` và
+`app_name` là xong.
 
 Shell-out dùng tên lệnh trần (`pgrep`, `defaults`, `open`, `killall`) — không
 hardcode đường dẫn tuyệt đối.

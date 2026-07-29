@@ -76,7 +76,7 @@ fn run() -> anyhow::Result<()> {
             Ok(())
         }
         Some(Cmd::Doctor { fix }) => {
-            if doctor::run(fix, &cfg)? {
+            if doctor::run(fix, &cfg, make_ime(&cfg)?.as_ref())? {
                 std::process::exit(2);
             }
             Ok(())
@@ -90,10 +90,11 @@ fn run() -> anyhow::Result<()> {
 }
 
 fn switch(mode: Mode, platform: Platform, cfg: &config::Config) -> anyhow::Result<()> {
-    let Some(want) = desired(mode, platform, &cfg.macos.source_vi, &cfg.macos.source_zh) else {
+    let Some(want) = desired(mode, platform, &cfg.macos.sources(), has_external_ime(cfg)) else {
         anyhow::bail!("mode {} không có trên nền tảng này", mode.as_str());
     };
-    let (layout, ime) = build_backends(cfg)?;
+    let layout = make_layout();
+    let ime = make_ime(cfg)?;
     reconcile::reconcile(
         layout.as_ref(),
         ime.as_ref(),
@@ -103,33 +104,60 @@ fn switch(mode: Mode, platform: Platform, cfg: &config::Config) -> anyhow::Resul
     )
 }
 
+// --- một cửa duy nhất dựng backend ---------------------------------------
+// switch, snapshot và doctor đều đi qua đây. Thêm bộ gõ mới = thêm một nhánh
+// match, không phải lùng ba chỗ khác nhau.
+
 #[cfg(target_os = "macos")]
-fn build_backends(
-    cfg: &config::Config,
-) -> anyhow::Result<(Box<dyn backend::Layout>, Box<dyn backend::Ime>)> {
+fn make_layout() -> Box<dyn backend::Layout> {
+    Box::new(backend::macos::tis::TisLayout)
+}
+
+#[cfg(windows)]
+fn make_layout() -> Box<dyn backend::Layout> {
+    Box::new(backend::NoopLayout)
+}
+
+/// Có app ngoài lo tiếng Việt không? false = macOS tự lo qua input source.
+#[cfg(target_os = "macos")]
+fn has_external_ime(cfg: &config::Config) -> bool {
+    cfg.macos.backend != "system"
+}
+
+#[cfg(windows)]
+fn has_external_ime(_cfg: &config::Config) -> bool {
+    true // Windows luôn qua VKey
+}
+
+#[cfg(target_os = "macos")]
+fn make_ime(cfg: &config::Config) -> anyhow::Result<Box<dyn backend::Ime>> {
+    use backend::macos::{app::AppIme, gonhanh::GonhanhIme, system::SystemIme};
     anyhow::ensure!(
         cfg.macos.strategy == "process",
         "strategy '{}' chưa hỗ trợ (v1 chỉ có 'process')",
         cfg.macos.strategy
     );
-    Ok((
-        Box::new(backend::macos::tis::TisLayout),
-        Box::new(backend::macos::gonhanh::GonhanhIme {
-            app_name: cfg.macos.app_name.clone(),
-        }),
-    ))
+    let name = cfg.macos.app_name.clone();
+    Ok(match cfg.macos.backend.as_str() {
+        "gonhanh" => Box::new(GonhanhIme { app_name: name }),
+        "app" => Box::new(AppIme { app_name: name }),
+        "system" => Box::new(SystemIme { app_name: name }),
+        other => anyhow::bail!("backend '{other}' không hợp lệ (gonhanh|app|system)"),
+    })
+}
+
+#[cfg(windows)]
+fn make_ime(cfg: &config::Config) -> anyhow::Result<Box<dyn backend::Ime>> {
+    Ok(Box::new(backend::windows::vkey::VkeyIme {
+        exe_path_override: cfg.windows.vkey_path.clone(),
+    }))
 }
 
 #[cfg(target_os = "macos")]
 fn snapshot(cfg: &config::Config) -> anyhow::Result<status::Snapshot> {
-    use backend::Ime as _;
     let layout = backend::macos::tis::current_source_id()?;
-    let gonhanh = backend::macos::gonhanh::GonhanhIme {
-        app_name: cfg.macos.app_name.clone(),
-    };
-    let ime_on = gonhanh.is_on()?;
-    let (mode, drift) =
-        status::infer_mac(ime_on, &layout, &cfg.macos.source_vi, &cfg.macos.source_zh);
+    let ime_on = make_ime(cfg)?.is_on()?;
+    let (mode, drift) = status::infer_mac(ime_on, &layout, &cfg.macos.sources());
     Ok(status::Snapshot {
         mode,
         layout: Some(layout),
@@ -139,24 +167,8 @@ fn snapshot(cfg: &config::Config) -> anyhow::Result<status::Snapshot> {
 }
 
 #[cfg(windows)]
-fn build_backends(
-    cfg: &config::Config,
-) -> anyhow::Result<(Box<dyn backend::Layout>, Box<dyn backend::Ime>)> {
-    Ok((
-        Box::new(backend::NoopLayout),
-        Box::new(backend::windows::vkey::VkeyIme {
-            exe_path_override: cfg.windows.vkey_path.clone(),
-        }),
-    ))
-}
-
-#[cfg(windows)]
 fn snapshot(cfg: &config::Config) -> anyhow::Result<status::Snapshot> {
-    use backend::Ime as _;
-    let vkey = backend::windows::vkey::VkeyIme {
-        exe_path_override: cfg.windows.vkey_path.clone(),
-    };
-    let ime_on = vkey.is_on()?;
+    let ime_on = make_ime(cfg)?.is_on()?;
     Ok(status::Snapshot {
         mode: status::infer_win(ime_on),
         layout: None,

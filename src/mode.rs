@@ -27,6 +27,19 @@ pub struct Desired {
     pub ime_on: bool,
 }
 
+/// Ba input source của ba mode trên macOS.
+///
+/// `vi` và `en` TRÙNG NHAU khi tiếng Việt do một app ngoài lo (GoNhanh, EVKey...):
+/// layout giữ nguyên ABC, chỉ bit IME phân biệt. Chúng KHÁC NHAU khi tiếng Việt
+/// đến thẳng từ input source của macOS (backend `system`) — lúc đó layout mới là
+/// thứ phân biệt, và không có app ngoài nào để bật.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Sources {
+    pub vi: String,
+    pub en: String,
+    pub zh: String,
+}
+
 impl Mode {
     pub fn as_str(&self) -> &'static str {
         match self {
@@ -61,28 +74,33 @@ impl Platform {
 }
 
 /// None = mode không tồn tại trên nền tảng này (zh trên Windows).
+///
+/// `has_external_ime = false` (backend `system`) nghĩa là không có app ngoài nào
+/// để bật — tiếng Việt hoàn toàn do `sources.vi` lo, nên `ime_on` phải là false
+/// cho MỌI mode, nếu không reconcile sẽ đi tìm một app không tồn tại và verify
+/// trượt vĩnh viễn.
 pub fn desired(
     mode: Mode,
     platform: Platform,
-    source_vi: &str,
-    source_zh: &str,
+    sources: &Sources,
+    has_external_ime: bool,
 ) -> Option<Desired> {
     match (platform, mode) {
         (Platform::MacOs, Mode::Vi) => Some(Desired {
-            layout: Some(source_vi.into()),
-            ime_on: true,
+            layout: Some(sources.vi.clone()),
+            ime_on: has_external_ime,
         }),
         (Platform::MacOs, Mode::En) => Some(Desired {
-            layout: Some(source_vi.into()),
+            layout: Some(sources.en.clone()),
             ime_on: false,
         }),
         (Platform::MacOs, Mode::Zh) => Some(Desired {
-            layout: Some(source_zh.into()),
+            layout: Some(sources.zh.clone()),
             ime_on: false,
         }),
         (Platform::Windows, Mode::Vi) => Some(Desired {
             layout: None,
-            ime_on: true,
+            ime_on: has_external_ime,
         }),
         (Platform::Windows, Mode::En) => Some(Desired {
             layout: None,
@@ -98,6 +116,25 @@ mod tests {
 
     const ABC: &str = "com.apple.keylayout.ABC";
     const PINYIN: &str = "com.apple.inputmethod.SCIM.ITABC";
+    const TELEX: &str = "com.apple.inputmethod.VietnameseIM.VietnameseTelex";
+
+    /// Bộ gõ ngoài lo tiếng Việt: vi và en dùng chung layout ABC.
+    fn app_sources() -> Sources {
+        Sources {
+            vi: ABC.into(),
+            en: ABC.into(),
+            zh: PINYIN.into(),
+        }
+    }
+
+    /// Bộ gõ hệ thống của macOS: vi có layout riêng, không có app ngoài.
+    fn system_sources() -> Sources {
+        Sources {
+            vi: TELEX.into(),
+            en: ABC.into(),
+            zh: PINYIN.into(),
+        }
+    }
 
     #[test]
     fn parse_mode() {
@@ -108,35 +145,51 @@ mod tests {
 
     #[test]
     fn mac_vi_bat_ime_layout_abc() {
-        let d = desired(Mode::Vi, Platform::MacOs, ABC, PINYIN).unwrap();
+        let d = desired(Mode::Vi, Platform::MacOs, &app_sources(), true).unwrap();
         assert_eq!(d.layout.as_deref(), Some(ABC));
         assert!(d.ime_on);
     }
 
     #[test]
     fn mac_en_tat_ime_layout_abc() {
-        let d = desired(Mode::En, Platform::MacOs, ABC, PINYIN).unwrap();
+        let d = desired(Mode::En, Platform::MacOs, &app_sources(), true).unwrap();
         assert_eq!(d.layout.as_deref(), Some(ABC));
         assert!(!d.ime_on);
     }
 
     #[test]
     fn mac_zh_tat_ime_layout_pinyin() {
-        let d = desired(Mode::Zh, Platform::MacOs, ABC, PINYIN).unwrap();
+        let d = desired(Mode::Zh, Platform::MacOs, &app_sources(), true).unwrap();
         assert_eq!(d.layout.as_deref(), Some(PINYIN));
         assert!(!d.ime_on);
     }
 
     #[test]
+    fn system_vi_doi_layout_va_khong_bat_app_nao() {
+        let d = desired(Mode::Vi, Platform::MacOs, &system_sources(), false).unwrap();
+        assert_eq!(d.layout.as_deref(), Some(TELEX));
+        // không có app ngoài — đòi bật là đòi thứ không tồn tại
+        assert!(!d.ime_on);
+    }
+
+    #[test]
+    fn system_en_ve_layout_rieng_chu_khong_dung_layout_cua_vi() {
+        let d = desired(Mode::En, Platform::MacOs, &system_sources(), false).unwrap();
+        assert_eq!(d.layout.as_deref(), Some(ABC));
+        assert!(!d.ime_on);
+    }
+
+    #[test]
     fn win_khong_dung_layout() {
-        let vi = desired(Mode::Vi, Platform::Windows, "", "").unwrap();
+        let s = app_sources();
+        let vi = desired(Mode::Vi, Platform::Windows, &s, true).unwrap();
         assert!(vi.layout.is_none() && vi.ime_on);
-        let en = desired(Mode::En, Platform::Windows, "", "").unwrap();
+        let en = desired(Mode::En, Platform::Windows, &s, true).unwrap();
         assert!(en.layout.is_none() && !en.ime_on);
     }
 
     #[test]
     fn win_khong_co_zh() {
-        assert!(desired(Mode::Zh, Platform::Windows, "", "").is_none());
+        assert!(desired(Mode::Zh, Platform::Windows, &app_sources(), true).is_none());
     }
 }

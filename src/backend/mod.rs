@@ -15,6 +15,13 @@ pub trait Layout {
 pub trait Ime {
     fn is_on(&self) -> anyhow::Result<bool>;
     fn set(&self, on: bool) -> anyhow::Result<()>;
+
+    /// Phần khám của riêng backend này cho `tongue doctor` — nhờ nó doctor không
+    /// cần biết tên app nào tồn tại. `fix` = được phép sửa thứ an toàn.
+    /// Mặc định: backend không có gì riêng để khám.
+    fn diagnose(&self, _fix: bool) -> anyhow::Result<Vec<crate::doctor::Finding>> {
+        Ok(Vec::new())
+    }
 }
 
 /// Windows không đụng layout (US cố định) — desired.layout luôn None ở đó.
