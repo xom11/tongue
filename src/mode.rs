@@ -10,6 +10,9 @@ pub enum Mode {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Platform {
     MacOs,
+    // Chỉ được construct thật trong Platform::current() dưới cfg(windows), hoặc trong
+    // test của chính file này (desired() vốn thuần, test cross-platform trên mọi OS).
+    #[allow(dead_code)]
     Windows,
 }
 
@@ -54,13 +57,33 @@ impl Platform {
 }
 
 /// None = mode không tồn tại trên nền tảng này (zh trên Windows).
-pub fn desired(mode: Mode, platform: Platform, source_vi: &str, source_zh: &str) -> Option<Desired> {
+pub fn desired(
+    mode: Mode,
+    platform: Platform,
+    source_vi: &str,
+    source_zh: &str,
+) -> Option<Desired> {
     match (platform, mode) {
-        (Platform::MacOs, Mode::Vi) => Some(Desired { layout: Some(source_vi.into()), ime_on: true }),
-        (Platform::MacOs, Mode::En) => Some(Desired { layout: Some(source_vi.into()), ime_on: false }),
-        (Platform::MacOs, Mode::Zh) => Some(Desired { layout: Some(source_zh.into()), ime_on: false }),
-        (Platform::Windows, Mode::Vi) => Some(Desired { layout: None, ime_on: true }),
-        (Platform::Windows, Mode::En) => Some(Desired { layout: None, ime_on: false }),
+        (Platform::MacOs, Mode::Vi) => Some(Desired {
+            layout: Some(source_vi.into()),
+            ime_on: true,
+        }),
+        (Platform::MacOs, Mode::En) => Some(Desired {
+            layout: Some(source_vi.into()),
+            ime_on: false,
+        }),
+        (Platform::MacOs, Mode::Zh) => Some(Desired {
+            layout: Some(source_zh.into()),
+            ime_on: false,
+        }),
+        (Platform::Windows, Mode::Vi) => Some(Desired {
+            layout: None,
+            ime_on: true,
+        }),
+        (Platform::Windows, Mode::En) => Some(Desired {
+            layout: None,
+            ime_on: false,
+        }),
         (Platform::Windows, Mode::Zh) => None,
     }
 }

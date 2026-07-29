@@ -69,7 +69,9 @@ unsafe fn copy_source_by_id(id: &str) -> Option<TISInputSourceRef> {
 pub fn select_source(id: &str) -> Result<()> {
     unsafe {
         let Some(src) = copy_source_by_id(id) else {
-            bail!("không tìm thấy input source {id} — đã bật trong System Settings > Keyboard chưa?");
+            bail!(
+                "không tìm thấy input source {id} — đã bật trong System Settings > Keyboard chưa?"
+            );
         };
         let status = TISSelectInputSource(src);
         CFRelease(src as _);

@@ -47,7 +47,10 @@ pub struct VerifyConfig {
 
 impl Default for VerifyConfig {
     fn default() -> Self {
-        Self { timeout_ms: 1000, poll_ms: 50 }
+        Self {
+            timeout_ms: 1000,
+            poll_ms: 50,
+        }
     }
 }
 

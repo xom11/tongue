@@ -64,7 +64,14 @@ fn run() -> anyhow::Result<()> {
         Some(Cmd::Zh) => switch(Mode::Zh, platform, &cfg),
         Some(Cmd::Status { json }) => {
             let s = snapshot(&cfg)?;
-            print!("{}", if json { status::render_json(&s) } else { status::render_human(&s) });
+            print!(
+                "{}",
+                if json {
+                    status::render_json(&s)
+                } else {
+                    status::render_human(&s)
+                }
+            );
             Ok(())
         }
         Some(Cmd::Doctor { fix }) => {
@@ -106,7 +113,9 @@ fn build_backends(
     );
     Ok((
         Box::new(backend::macos::tis::TisLayout),
-        Box::new(backend::macos::gonhanh::GonhanhIme { app_name: cfg.macos.app_name.clone() }),
+        Box::new(backend::macos::gonhanh::GonhanhIme {
+            app_name: cfg.macos.app_name.clone(),
+        }),
     ))
 }
 
@@ -114,10 +123,18 @@ fn build_backends(
 fn snapshot(cfg: &config::Config) -> anyhow::Result<status::Snapshot> {
     use backend::Ime as _;
     let layout = backend::macos::tis::current_source_id()?;
-    let gonhanh = backend::macos::gonhanh::GonhanhIme { app_name: cfg.macos.app_name.clone() };
+    let gonhanh = backend::macos::gonhanh::GonhanhIme {
+        app_name: cfg.macos.app_name.clone(),
+    };
     let ime_on = gonhanh.is_on()?;
-    let (mode, drift) = status::infer_mac(ime_on, &layout, &cfg.macos.source_vi, &cfg.macos.source_zh);
-    Ok(status::Snapshot { mode, layout: Some(layout), ime_on, drift })
+    let (mode, drift) =
+        status::infer_mac(ime_on, &layout, &cfg.macos.source_vi, &cfg.macos.source_zh);
+    Ok(status::Snapshot {
+        mode,
+        layout: Some(layout),
+        ime_on,
+        drift,
+    })
 }
 
 #[cfg(windows)]
@@ -126,14 +143,23 @@ fn build_backends(
 ) -> anyhow::Result<(Box<dyn backend::Layout>, Box<dyn backend::Ime>)> {
     Ok((
         Box::new(backend::NoopLayout),
-        Box::new(backend::windows::vkey::VkeyIme { exe_path_override: cfg.windows.vkey_path.clone() }),
+        Box::new(backend::windows::vkey::VkeyIme {
+            exe_path_override: cfg.windows.vkey_path.clone(),
+        }),
     ))
 }
 
 #[cfg(windows)]
 fn snapshot(cfg: &config::Config) -> anyhow::Result<status::Snapshot> {
     use backend::Ime as _;
-    let vkey = backend::windows::vkey::VkeyIme { exe_path_override: cfg.windows.vkey_path.clone() };
+    let vkey = backend::windows::vkey::VkeyIme {
+        exe_path_override: cfg.windows.vkey_path.clone(),
+    };
     let ime_on = vkey.is_on()?;
-    Ok(status::Snapshot { mode: status::infer_win(ime_on), layout: None, ime_on, drift: None })
+    Ok(status::Snapshot {
+        mode: status::infer_win(ime_on),
+        layout: None,
+        ime_on,
+        drift: None,
+    })
 }

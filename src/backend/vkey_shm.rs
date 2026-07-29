@@ -61,9 +61,15 @@ mod tests {
     #[test]
     fn doc_bit_vietnamese() {
         assert_eq!(parse_vietnamese_flag(&shm(VKEY_MAGIC, 4, 0x0001)), Ok(true));
-        assert_eq!(parse_vietnamese_flag(&shm(VKEY_MAGIC, 4, 0x0000)), Ok(false));
+        assert_eq!(
+            parse_vietnamese_flag(&shm(VKEY_MAGIC, 4, 0x0000)),
+            Ok(false)
+        );
         // bit khác bật không ảnh hưởng bit 0
-        assert_eq!(parse_vietnamese_flag(&shm(VKEY_MAGIC, 2, 0x0102)), Ok(false));
+        assert_eq!(
+            parse_vietnamese_flag(&shm(VKEY_MAGIC, 2, 0x0102)),
+            Ok(false)
+        );
     }
 
     #[test]
@@ -84,6 +90,9 @@ mod tests {
 
     #[test]
     fn buffer_ngan_thi_tu_choi() {
-        assert_eq!(parse_vietnamese_flag(&[0u8; 10]), Err(ShmError::TooShort(10)));
+        assert_eq!(
+            parse_vietnamese_flag(&[0u8; 10]),
+            Err(ShmError::TooShort(10))
+        );
     }
 }

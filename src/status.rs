@@ -23,7 +23,10 @@ pub fn infer_mac(
         if ime_on {
             (
                 "zh".into(),
-                Some("GoNhanh đang chạy cùng Pinyin — chạy `tongue zh` hoặc `tongue vi` để dọn".into()),
+                Some(
+                    "GoNhanh đang chạy cùng Pinyin — chạy `tongue zh` hoặc `tongue vi` để dọn"
+                        .into(),
+                ),
             )
         } else {
             ("zh".into(), None)
@@ -33,8 +36,14 @@ pub fn infer_mac(
     }
 }
 
+// Call site thật nằm trong main.rs dưới cfg(windows); test riêng chạy trên mọi OS.
+#[allow(dead_code)]
 pub fn infer_win(ime_on: bool) -> String {
-    if ime_on { "vi".into() } else { "en".into() }
+    if ime_on {
+        "vi".into()
+    } else {
+        "en".into()
+    }
 }
 
 pub fn render_human(s: &Snapshot) -> String {
@@ -42,7 +51,10 @@ pub fn render_human(s: &Snapshot) -> String {
     if let Some(l) = &s.layout {
         out.push_str(&format!("layout: {l}\n"));
     }
-    out.push_str(&format!("ime:    {}\n", if s.ime_on { "bật" } else { "tắt" }));
+    out.push_str(&format!(
+        "ime:    {}\n",
+        if s.ime_on { "bật" } else { "tắt" }
+    ));
     if let Some(d) = &s.drift {
         out.push_str(&format!("lệch:   {d}\n"));
     }
@@ -97,7 +109,12 @@ mod tests {
 
     #[test]
     fn render_json_dung_dang() {
-        let s = Snapshot { mode: "vi".into(), layout: Some("abc".into()), ime_on: true, drift: None };
+        let s = Snapshot {
+            mode: "vi".into(),
+            layout: Some("abc".into()),
+            ime_on: true,
+            drift: None,
+        };
         assert_eq!(
             render_json(&s),
             "{\"mode\":\"vi\",\"layout\":\"abc\",\"ime_on\":true,\"drift\":null}\n"

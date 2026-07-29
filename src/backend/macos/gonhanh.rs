@@ -17,7 +17,11 @@ pub struct GonhanhIme {
 impl Ime for GonhanhIme {
     fn is_on(&self) -> Result<bool> {
         // pgrep -x: khớp đúng tên process, exit 0 nếu có
-        Ok(Command::new("pgrep").args(["-x", &self.app_name]).output()?.status.success())
+        Ok(Command::new("pgrep")
+            .args(["-x", &self.app_name])
+            .output()?
+            .status
+            .success())
     }
 
     fn set(&self, on: bool) -> Result<()> {
@@ -30,8 +34,14 @@ impl Ime for GonhanhIme {
             if !self.is_on()? {
                 // -g: không kéo app ra foreground. Gọi lặp khi app đang khởi động
                 // (reconcile poll) là vô hại — LaunchServices no-op với app đã chạy.
-                let st = Command::new("open").args(["-ga", &self.app_name]).status()?;
-                ensure!(st.success(), "không mở được {} — đã cài chưa?", self.app_name);
+                let st = Command::new("open")
+                    .args(["-ga", &self.app_name])
+                    .status()?;
+                ensure!(
+                    st.success(),
+                    "không mở được {} — đã cài chưa?",
+                    self.app_name
+                );
             }
         } else if self.is_on()? {
             // killall gửi SIGTERM; GoNhanh không có state cần dọn ngoài process
