@@ -16,7 +16,7 @@ Exit code: `0` = đích đã verify khớp · `1` = verify trượt (`VerifyFail
 ## Lệnh kiểm tra — chạy đủ TRƯỚC khi push
 
 ```bash
-cargo test                                                    # 31 unit test + 1 smoke ignored
+cargo test                                                    # 63 unit test + 2 smoke ignored
 cargo fmt --check
 cargo clippy --all-targets -- -D warnings                     # macOS
 cargo clippy --all-targets --target x86_64-pc-windows-msvc -- -D warnings   # BẮT BUỘC
@@ -188,5 +188,5 @@ và doctor chỉ đúng thủ phạm. Đúng như thiết kế, không phải s�
 ## Ngoài phạm vi hiện tại (đã ghi trong spec, đừng tự làm)
 
 Auto-switch theo app, daemon/hotkey, Linux, tích hợp `~/.nix` (flake input +
-hotkey gọi CLI như beckon — chủ repo tự nối), strategy `hotkey`/`notify` cho
-GoNhanh, fallback ghi shm khi VKey chạy admin.
+hotkey gọi CLI như beckon — chủ repo tự nối), strategy `notify` cho GoNhanh,
+fallback ghi shm khi VKey chạy admin.
