@@ -22,5 +22,10 @@ windows-sys = { version = "0.59", features = [
   # ProcessIdToSessionId + GetCurrentProcessId: phát hiện session 0 (service/SSH), nơi
   # window station và namespace `Local\` không phải của người dùng — xem vkey.rs.
   "Win32_System_RemoteDesktop",
+  # CreateProcessW (spawn không thừa kế handle) nằm trong Win32_System_Threading, nhưng
+  # windows-sys chỉ phát ra nó khi CÓ CẢ Win32_Security: signature của nó tham chiếu
+  # SECURITY_ATTRIBUTES. Thiếu feature này thì lỗi là "unresolved import CreateProcessW",
+  # không hề nhắc tới Security.
   "Win32_System_Threading",
+  "Win32_Security",
 ] }
