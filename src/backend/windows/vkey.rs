@@ -9,14 +9,15 @@ use crate::backend::{vkey_shm, Ime};
 use crate::doctor::{Finding, Level};
 use anyhow::{bail, Context, Result};
 use std::path::PathBuf;
-use std::process::Stdio;
 use std::time::{Duration, Instant};
 use windows_sys::Win32::Foundation::{CloseHandle, HWND};
 use windows_sys::Win32::System::Memory::{
     MapViewOfFile, OpenFileMappingW, UnmapViewOfFile, FILE_MAP_READ,
 };
 use windows_sys::Win32::System::RemoteDesktop::ProcessIdToSessionId;
-use windows_sys::Win32::System::Threading::GetCurrentProcessId;
+use windows_sys::Win32::System::Threading::{
+    CreateProcessW, GetCurrentProcessId, DETACHED_PROCESS, PROCESS_INFORMATION, STARTUPINFOW,
+};
 use windows_sys::Win32::UI::WindowsAndMessaging::{FindWindowW, PostMessageW};
 
 const WM_VKEY_SET_MODE: u32 = 0x0400 + 100; // WM_USER+100 — VKey SharedConstants.h
@@ -88,6 +89,59 @@ pub fn read_state() -> Result<Option<bool>> {
     }
 }
 
+/// Chạy exe mà KHÔNG cho nó thừa kế handle nào của mình.
+///
+/// `std::process::Command` không làm được việc này, kể cả với `Stdio::null()` cả ba —
+/// đã ĐO trên máy thật, không phải suy đoán. Lý do: `Stdio::null()` chỉ đặt ba std handle
+/// của con thành NUL, còn Rust vẫn gọi `CreateProcessW` với `bInheritHandles = TRUE`, và
+/// Windows thì thừa kế TẤT CẢ handle đang bật cờ inheritable của cha — không có danh sách
+/// chọn lọc nào (muốn chọn lọc phải dùng `PROC_THREAD_ATTRIBUTE_HANDLE_LIST`).
+///
+/// Hậu quả nếu để nguyên: bất cứ ai chạy tongue với stdout là pipe — `$(tongue vi)`,
+/// `|`, ssh, CI, .NET `RedirectStandardOutput` — đều đưa cho VKey một bản handle của
+/// đầu ghi pipe đó. VKey sống lâu hơn tongue, nên pipe KHÔNG BAO GIỜ tới EOF và bên đọc
+/// treo vô hạn dù tongue đã thoát từ lâu. Số đo: tongue thoát sau 199ms, EOF không tới
+/// trong 12s tiếp theo.
+///
+/// `bInheritHandles = FALSE` cắt gốc vấn đề. VKey không cần handle nào của ta cả.
+fn spawn_no_inherit(exe: &std::path::Path) -> Result<()> {
+    // CreateProcessW ghi vào lpCommandLine nên phải là buffer sửa được. Bọc ngoặc kép
+    // để đường dẫn có khoảng trắng không bị tách thành nhiều tham số.
+    let mut cmdline: Vec<u16> = format!("\"{}\"", exe.display())
+        .encode_utf16()
+        .chain(std::iter::once(0))
+        .collect();
+
+    let mut si: STARTUPINFOW = unsafe { std::mem::zeroed() };
+    si.cb = std::mem::size_of::<STARTUPINFOW>() as u32;
+    let mut pi: PROCESS_INFORMATION = unsafe { std::mem::zeroed() };
+
+    let ok = unsafe {
+        CreateProcessW(
+            std::ptr::null(),
+            cmdline.as_mut_ptr(),
+            std::ptr::null(),
+            std::ptr::null(),
+            0, // bInheritHandles = FALSE — đây là cả điểm của hàm này
+            DETACHED_PROCESS,
+            std::ptr::null(),
+            std::ptr::null(),
+            &si,
+            &mut pi,
+        )
+    };
+    if ok == 0 {
+        return Err(std::io::Error::last_os_error())
+            .with_context(|| format!("CreateProcessW thất bại cho {}", exe.display()));
+    }
+    // Không chờ VKey: nó là app GUI sống lâu hơn ta. Chỉ đóng hai handle vừa nhận.
+    unsafe {
+        CloseHandle(pi.hProcess);
+        CloseHandle(pi.hThread);
+    }
+    Ok(())
+}
+
 pub struct VkeyIme {
     pub exe_path_override: String,
 }
@@ -146,16 +200,7 @@ impl VkeyIme {
             bail!("{SERVICE_SESSION_ERR}");
         }
         let exe = self.discover_exe()?;
-        // stdio phải cắt hẳn. VKey là app GUI sống lâu hơn tongue; nếu nó thừa kế
-        // stdout/stderr của ta thì mọi thứ đọc output của tongue tới EOF sẽ treo cho tới
-        // khi VKey chết — `$(tongue vi)`, pipe, ssh, CI. Không phải giả thuyết: đúng cách
-        // này làm một lệnh ssh treo 2 phút trong khi tongue đã thoát từ lâu.
-        std::process::Command::new(&exe)
-            .stdin(Stdio::null())
-            .stdout(Stdio::null())
-            .stderr(Stdio::null())
-            .spawn()
-            .with_context(|| format!("không chạy được {}", exe.display()))?;
+        spawn_no_inherit(&exe)?;
         // mutex nội bộ của VKey tự chống chạy trùng; chờ cửa sổ xuất hiện
         let deadline = Instant::now() + Duration::from_secs(5);
         loop {
