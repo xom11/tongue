@@ -198,3 +198,49 @@ fn snapshot(cfg: &config::Config) -> anyhow::Result<status::Snapshot> {
         drift,
     })
 }
+
+// Chỉ chạy trên macOS: make_ime bản Windows bỏ qua cfg.macos hoàn toàn nên
+// những ca lỗi dưới đây không có ý nghĩa gì bên đó (luôn Ok bất kể backend/
+// strategy). make_ime chỉ DỰNG struct (không mở app, không đọc defaults,
+// không chạm FFI) nên gọi thẳng trong test là an toàn — bail! xảy ra trước
+// khi có bất kỳ side effect nào.
+#[cfg(all(test, target_os = "macos"))]
+mod tests {
+    use super::*;
+
+    fn cfg_voi(backend: &str, strategy: &str) -> config::Config {
+        let mut c = config::Config::default();
+        c.macos.backend = backend.into();
+        c.macos.strategy = strategy.into();
+        c
+    }
+
+    #[test]
+    fn hotkey_voi_backend_system_thi_loi() {
+        let cfg = cfg_voi("system", "hotkey");
+        // Box<dyn Ime> không impl Debug nên unwrap_err() thẳng không được —
+        // map Ok về () (có Debug) trước khi unwrap_err.
+        let err = make_ime(&cfg).map(|_| ()).unwrap_err();
+        assert!(err.to_string().contains("chord toggle"));
+    }
+
+    #[test]
+    fn hotkey_voi_backend_app_thi_loi() {
+        let cfg = cfg_voi("app", "hotkey");
+        let err = make_ime(&cfg).map(|_| ()).unwrap_err();
+        assert!(err.to_string().contains("chord toggle"));
+    }
+
+    #[test]
+    fn gonhanh_hotkey_thi_ok() {
+        let cfg = cfg_voi("gonhanh", "hotkey");
+        assert!(make_ime(&cfg).is_ok());
+    }
+
+    #[test]
+    fn gonhanh_process_mac_dinh_thi_ok() {
+        // Mặc định của config: backend = gonhanh, strategy = process.
+        let cfg = config::Config::default();
+        assert!(make_ime(&cfg).is_ok());
+    }
+}
