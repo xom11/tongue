@@ -59,6 +59,11 @@ IME** phân biệt vi/en (`source_vi == source_en`), còn bộ gõ hệ thống 
 **layout** để phân biệt (`source_vi != source_en`, bit IME luôn tắt). `source_en`
 mặc định trùng `source_vi` nên mô hình cũ là trường hợp riêng, không cần cấu hình.
 
+Cột `gonhanh`/`app` ở trên gộp chung hai strategy khác nhau của backend
+`gonhanh`: `process` (mặc định — vi = app chạy, en = app bị SIGTERM) và `hotkey`
+(app luôn chạy, vi/en phân biệt bằng bit `gonhanh.enabled` đổi qua chord toggle).
+Xem `[macos] strategy` và mục bất biến bên dưới.
+
 ```
 src/mode.rs        # bảng mode → Desired {layout, ime_on} + struct Sources — thuần
 src/reconcile.rs   # vòng áp + verify sau 2 trait; VerifyFailed → exit 1
@@ -68,6 +73,9 @@ src/backend/
   macos/tis.rs     # FFI TIS API (link framework Carbon) — đổi input source
   macos/app.rs     # helper pgrep/open/killall + AppIme generic (EVKey, OpenKey...)
   macos/gonhanh.rs # AppIme + defaults write; diagnose() ôm luôn bẫy perAppMode
+  macos/chord.rs   # parser chord toggle GoNhanh (thuần) — test không cần máy thật
+  macos/prefs.rs   # đọc defaults qua CFPreferences (chỉ đọc)
+  macos/hotkey.rs  # strategy hotkey: giữ app sống, đổi mode bằng chord
   macos/system.rs  # SystemIme: không app ngoài, tiếng Việt từ input source macOS
   windows/vkey.rs  # FindWindow + PostMessage + shared memory; diagnose() ôm 3 check VKey
 src/config.rs      # ~/.config/tongue/config.toml (mac) / %APPDATA%\tongue (win); vắng file = default
@@ -90,6 +98,27 @@ file:line): VKey magic `0x5945_4B4E`, structVersion ≤ 4, flags @offset 16 bit
 khi `open`). Bẫy: `perAppMode` mặc định bật làm key `enabled` thành đồ giả —
 `doctor --fix` ghim nó về 0. Muốn "đổi không cần restart" thì đi đường nâng cấp
 trong spec (giả lập chord hotkey / PR upstream), đừng chế kênh mới.
+
+**Chord toggle của GoNhanh là RELAY, không idempotent — `set()` phải tự chờ xác
+nhận rồi mới trả về, và bắn TỐI ĐA MỘT chord mỗi lần chạy.** reconcile gọi lại
+`set()` mỗi vòng poll 50ms, mà GoNhanh mất 87–286ms (đo 4 lần, 30/07/2026) mới
+ghi `gonhanh.enabled`. Trả về sớm là bắn trùng 2–6 chord và lật mode qua lại;
+bỏ chốt "một chord" là cú thứ hai lật ngược cú đầu ăn chậm.
+
+**Đọc defaults của GoNhanh trên đường nóng phải qua CFPreferences
+(`macos/prefs.rs`), không shell-out.** Hai lý do độc lập: `defaults read` CẮT
+NGẮN blob data nên `gonhanh.shortcut.toggle` không parse được, và nó tốn
+66.5ms/lần — nhiều hơn cả chu kỳ poll 50ms (CFPreferences: 0.01ms). Nhớ
+`CFPreferencesAppSynchronize` trước mỗi lần đọc, không thì đọc phải cache cũ.
+
+**Quyền Accessibility cấp cho TIẾN TRÌNH CHỦ, không cho binary `tongue`.** Gõ
+tay trong terminal thì cấp cho app terminal đó; gọi từ Hammerspoon thì cấp cho
+Hammerspoon. Đây là kiểu hỏng khó đoán nhất của strategy `hotkey`, nên
+`diagnose()` nói thẳng điều này thay vì chỉ báo "thiếu quyền".
+
+**`is_on()` của strategy `hotkey` là `pgrep` VÀ `enabled`**, không phải một
+trong hai — khác `process` (chỉ `pgrep`). App chết thì `enabled` còn sót lại
+trong defaults cũng chẳng gõ được gì.
 
 **VKey KHÔNG BAO GIỜ bị kill trong luồng chuyển thường** — kill/restart là xáo
 hook `WH_KEYBOARD_LL`, hồi sinh đúng lỗi tranh hook với kanata mà tool này sinh

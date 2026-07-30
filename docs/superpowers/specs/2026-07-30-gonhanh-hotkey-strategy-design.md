@@ -37,6 +37,29 @@ Hai phát hiện phụ, đều buộc phải dùng CFPreferences thay vì shell-
 - Chi phí đọc: CFPreferences **0.01ms**, shell-out `defaults` **66.5ms**. Với
   `poll_ms = 50`, shell-out tốn nhiều thời gian hơn cả một chu kỳ poll.
 
+### Smoke thật sau khi cài đặt xong (Task 6, 30/07/2026)
+
+Chạy `tongue` build từ worktree `sdd/gonhanh-hotkey` (HEAD `823a7e5`), config
+`~/.config/tongue/config.toml` có `strategy = "hotkey"`. GoNhanh PID trước khi
+bắt đầu: **37506**.
+
+| Lệnh | PID GoNhanh sau | thời gian (binary trực tiếp) | exit |
+|------|------------------|-------------------------------|------|
+| `tongue en`     | 37506 (không đổi) | 237ms | 0 |
+| `tongue vi`     | 37506 (không đổi) | 237ms | 0 |
+| `tongue zh`     | 37506 (không đổi) | 273ms | 0 |
+| `tongue vi` (2) | 37506 (không đổi) | 267ms | 0 |
+
+PID **giống hệt 37506 xuyên suốt cả bốn lệnh** — app không hề bị kill/relaunch,
+đúng mục tiêu của thiết kế. `status` báo đúng mode ở mọi bước (`vi` → `zh` →
+`vi`), layout đổi đúng `com.apple.keylayout.ABC` ↔ `com.apple.inputmethod.SCIM.ITABC`.
+
+237–273ms **không phải cold-start theo nghĩa cũ** (kill+relaunch process, việc
+này không còn xảy ra — PID đứng yên) mà là thời gian `set()` tự chờ xác nhận
+`gonhanh.enabled` qua chord relay, đúng tầm 87–286ms đã đo ở trên. Mục tiêu "bỏ
+cold-start 200–400ms do relaunch app" đã đạt; độ trễ còn lại là chi phí relay
+cố hữu của cơ chế chord, không phải chi phí khởi động lại tiến trình.
+
 ## Vấn đề cốt lõi: chord là relay, `reconcile` giả định `set()` idempotent
 
 `reconcile` poll mỗi 50ms và gọi lại `ime.set()` mỗi vòng còn lệch
