@@ -33,7 +33,7 @@ pub fn print_findings(fs: &[Finding]) -> bool {
 
 #[cfg(target_os = "macos")]
 pub fn run(fix: bool, cfg: &Config, ime: &dyn crate::backend::Ime) -> Result<bool> {
-    use crate::backend::macos::tis;
+    use crate::backend::macos::{app, prefs, tis};
 
     let mut fs = vec![Finding {
         level: Level::Ok,
@@ -94,6 +94,30 @@ pub fn run(fix: bool, cfg: &Config, ime: &dyn crate::backend::Ime) -> Result<boo
                 cfg.macos.strategy
             ),
         });
+    }
+
+    // 5. hotkey → process: strategy hotkey thường xuyên để GoNhanh sống nhưng
+    //    tắt tiếng Việt (`en`/`zh` đều kết thúc ở đó, đó là cả điểm của nó).
+    //    Đổi cấu hình sang process ngay sau đó thì GonhanhIme::set(true) thấy
+    //    app đã sống nên KHÔNG launch lại — defaults ghi enabled=1 nhưng
+    //    instance đang chạy vẫn tắt tiếng Việt (chỉ đọc defaults lúc khởi
+    //    động). is_on() = is_running() = true nên reconcile verify khớp: `tongue
+    //    vi` báo exit 0 và `status` báo `vi` trong khi gõ tiếng Việt không hoạt
+    //    động. Chỉ đúng dưới process — hotkey tự biết trạng thái này.
+    if cfg.macos.backend == "gonhanh" && cfg.macos.strategy == "process" {
+        let dang_chay = app::is_running(&cfg.macos.app_name)?;
+        let enabled = prefs::read_bool("org.gonhanh.GoNhanh", "gonhanh.enabled");
+        if dang_chay && enabled == Some(false) {
+            fs.push(Finding {
+                level: Level::Warn,
+                msg: format!(
+                    "{app} đang chạy nhưng đang tắt tiếng Việt (gonhanh.enabled=false) — \
+`tongue vi` dưới strategy process sẽ là no-op và vẫn exit 0 vì chỉ kiểm tra app có sống; \
+thoát {app} rồi mở lại, hoặc đổi sang strategy \"hotkey\"",
+                    app = cfg.macos.app_name
+                ),
+            });
+        }
     }
 
     Ok(print_findings(&fs))

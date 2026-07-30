@@ -295,13 +295,54 @@ impl Ime for HotkeyIme {
     fn diagnose(&self, fix: bool) -> Result<Vec<Finding>> {
         let mut fs = vec![app::diagnose_bundle(&self.app_name)];
 
+        // hotkey đòi app sống LIÊN TỤC — khác `process`, nơi "chết" chính là
+        // trạng thái `en` bình thường. Ở đây app chết là bất thường: lần
+        // `tongue vi`/`en` tới sẽ phải cold-start (launch) trước khi bắn chord
+        // được. Vẫn tự phục hồi được (xem HotkeyCore::set nhánh launch) nên
+        // Warn chứ không Fail.
+        let running = app::is_running(&self.app_name)?;
+        fs.push(if running {
+            Finding {
+                level: Level::Ok,
+                msg: format!("{}: đang chạy", self.app_name),
+            }
+        } else {
+            Finding {
+                level: Level::Warn,
+                msg: format!(
+                    "{} không chạy — strategy hotkey cần app sống liên tục; lần \
+`tongue vi`/`en` tới sẽ phải launch (cold-start) trước khi bắn chord được",
+                    self.app_name
+                ),
+            }
+        });
+
+        // Ca hiếm nhưng nguy hiểm: app đang chạy mà `gonhanh.enabled` đọc ra
+        // None (chưa từng ghi, hoặc bị xoá) — is_on() dùng unwrap_or(false) nên
+        // coi như đang tắt. `tongue vi` khi đó sẽ bắn chord MÙ, mà chord là
+        // TOGGLE chứ không set thẳng: nếu người dùng đang thật sự ở `vi` thì cú
+        // bắn đó TẮT MẤT tiếng Việt họ đang gõ, rồi không xác nhận lại được
+        // (enabled vẫn None) nên reconcile hết ngân sách → VerifyFailed.
+        if running && prefs::read_bool(DEFAULTS_DOMAIN, KEY_ENABLED).is_none() {
+            fs.push(Finding {
+                level: Level::Warn,
+                msg: format!(
+                    "{} đang chạy nhưng chưa đọc được {KEY_ENABLED} — is_on() sẽ coi như \
+tắt, `tongue vi` có thể bắn chord mù và TẮT MẤT tiếng Việt đang gõ (chord là toggle, \
+không phải set thẳng)",
+                    self.app_name
+                ),
+            });
+        }
+
         // `hotkey` KHÔNG được phép giết app — đó là cả điểm của strategy này.
         // Nên --fix ở đây ghim perAppMode mà không restart; giá trị mới có hiệu
-        // lực ở lần khởi động sau của GoNhanh.
+        // lực ở lần khởi động sau của GoNhanh. Trả `false` (chưa restart) để
+        // diagnose_per_app_mode biết mà báo Warn thay vì Ok — việc chưa xong.
         fs.push(super::gonhanh::diagnose_per_app_mode(
             fix,
             &self.app_name,
-            &|| Ok(()),
+            &|| Ok(false),
         )?);
 
         // Kiểu hỏng khó đoán nhất: quyền cấp cho TIẾN TRÌNH CHỦ, không cho binary

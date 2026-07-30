@@ -16,7 +16,7 @@ Exit code: `0` = đích đã verify khớp · `1` = verify trượt (`VerifyFail
 ## Lệnh kiểm tra — chạy đủ TRƯỚC khi push
 
 ```bash
-cargo test                                                    # 63 unit test + 2 smoke ignored
+cargo test                                                    # 69 unit test + 2 smoke ignored
 cargo fmt --check
 cargo clippy --all-targets -- -D warnings                     # macOS
 cargo clippy --all-targets --target x86_64-pc-windows-msvc -- -D warnings   # BẮT BUỘC

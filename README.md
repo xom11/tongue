@@ -119,12 +119,23 @@ layout là thứ phân biệt. Vì vậy `backend = "system"` cần `source_vi` 
 `doctor` cũng cảnh báo nếu hai bộ gõ chạy chồng lên nhau — ví dụ đã chuyển sang
 `backend = "system"` nhưng GoNhanh vẫn còn trong Login Items.
 
+### Strategy hotkey (chỉ backend gonhanh)
+
+Mặc định `strategy = "process"` kill/launch GoNhanh mỗi lần đổi mode. `strategy
+= "hotkey"` giữ app sống liên tục và đổi vi/en bằng chính chord toggle
+(mặc định Ctrl+Shift+Space) mà GoNhanh đã đăng ký — không kill/launch, không
+cold-start.
+
+Đòi quyền **Accessibility** — nhưng cấp cho TIẾN TRÌNH CHỦ gọi `tongue` (app
+terminal, Hammerspoon...), không phải cho binary `tongue`. Thiếu quyền thì
+chord không tới được GoNhanh; `tongue doctor` báo `✗` và nói rõ cấp quyền cho ai.
+
 ### Tất cả tuỳ chọn
 
 ```toml
 [macos]
 backend   = "gonhanh"                            # gonhanh | app | system
-strategy  = "process"                            # v1 chỉ có "process"
+strategy  = "process"                            # process | hotkey (hotkey cần backend = "gonhanh")
 app_name  = "GoNhanh"                            # tên app cho backend gonhanh/app
 source_vi = "com.apple.keylayout.ABC"
 source_en = "com.apple.keylayout.ABC"            # mặc định trùng source_vi
@@ -231,8 +242,8 @@ thúc bằng `tongue vi` để khôi phục.
 
 ## Ngoài phạm vi hiện tại
 
-Auto-switch theo app đang focus, daemon/hotkey tích hợp sẵn, Linux, và các
-strategy `hotkey`/`notify` cho GoNhanh — đã ghi trong spec, chưa làm.
+Auto-switch theo app đang focus, daemon/hotkey tích hợp sẵn, Linux, và strategy
+`notify` cho GoNhanh — đã ghi trong spec, chưa làm.
 
 Chi tiết thiết kế kèm bằng chứng `file:line` từ source của cả hai bộ gõ:
 `docs/superpowers/specs/2026-07-29-tongue-design.md`. Quy ước cho người sửa code
