@@ -7,5 +7,11 @@ pub mod app;
 pub mod chord;
 
 pub mod gonhanh;
+
+// Call site thật (đọc chord GoNhanh trong tiến trình) nằm ở Task 4 — tới lúc
+// đó `read_bool`/`read_data` chưa ai gọi ngoài #[cfg(test)] là dead code hợp lệ.
+#[allow(dead_code)]
+pub mod prefs;
+
 pub mod system;
 pub mod tis;
