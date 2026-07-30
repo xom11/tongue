@@ -34,13 +34,16 @@ const KLF_ACTIVATE: u32 = 0x0001;
 /// 30/07/2026: danh sách trả về đúng hai HKL, `0x04090409` và `0x08040804`, tức khớp
 /// word thấp là ra ngay.
 ///
-/// **CHƯA XONG, đừng tin là `zh` chạy được:** tìm đúng HKL rồi
-/// `ActivateKeyboardLayout` + `PostMessage(WM_INPUTLANGCHANGEREQUEST)` vẫn KHÔNG đổi
-/// được layout khi gọi từ tiến trình nền (scheduled task). Đã loại trừ khả năng lỗi ở
-/// đây: tái hiện y nguyên thuật toán này bằng PowerShell từ cùng ngữ cảnh cũng thất bại
-/// hệt như vậy — `PostMessage` trả về TRUE mà layout đứng im sau 2.8s. Nghĩa là cần
-/// đường TSF (`ITfInputProcessorProfileMgr::ActivateProfile`) hoặc phải gọi từ tiến
-/// trình đang sở hữu cửa sổ foreground. `vi`/`en` không phụ thuộc chỗ này nên vẫn tốt.
+/// **Điều kiện bắt buộc: foreground phải là cửa sổ của một app thật.** Gửi
+/// `WM_INPUTLANGCHANGEREQUEST` vào desktop/shell (explorer) thì message bị bỏ qua —
+/// `PostMessage` vẫn trả TRUE, layout đứng im, và verify của reconcile trượt với
+/// "layout muốn 0804, thực tế 0409". Đã đo cả hai chiều trên a14-win 30/07/2026: với
+/// foreground là explorer thì trượt, với foreground là cửa sổ Terminal thì đổi đúng
+/// (0409 -> 0804 -> 0409). Không phải chuyện TSF: chính `switch-language.ahk` cũng
+/// thắng/thua theo đúng điều kiện này.
+///
+/// Trong thực tế điều kiện đó luôn thoả, vì người dùng bấm phím tắt khi đang ở trong
+/// app. Chỉ cẩn thận khi gọi tongue từ tiến trình nền lúc không ai focus gì.
 fn loaded_layouts() -> Vec<usize> {
     unsafe {
         let n = GetKeyboardLayoutList(0, std::ptr::null_mut());
