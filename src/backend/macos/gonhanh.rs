@@ -66,43 +66,53 @@ impl Ime for GonhanhIme {
     }
 
     fn diagnose(&self, fix: bool) -> Result<Vec<Finding>> {
-        let mut fs = vec![app::diagnose_bundle(&self.app_name)];
-
-        // perAppMode bật = GoNhanh nhớ trạng thái theo từng app, khiến key
-        // gonhanh.enabled thành đồ giả (bẫy đã xác minh trong source).
-        let out = Command::new("defaults")
-            .args(["read", DEFAULTS_DOMAIN, KEY_PER_APP])
-            .output()?;
-        let val = String::from_utf8_lossy(&out.stdout).trim().to_string();
-        if !out.status.success() {
-            fs.push(Finding {
-                level: Level::Warn,
-                msg: format!(
-                    "chưa đọc được defaults của {} — app đã chạy lần đầu chưa?",
-                    self.app_name
-                ),
-            });
-        } else if val == "0" {
-            fs.push(Finding {
-                level: Level::Ok,
-                msg: format!("{KEY_PER_APP} = 0"),
-            });
-        } else if fix {
-            let st = Command::new("defaults")
-                .args(["write", DEFAULTS_DOMAIN, KEY_PER_APP, "-bool", "NO"])
-                .status()?;
-            ensure!(st.success(), "defaults write {KEY_PER_APP} thất bại");
-            self.restart()?;
-            fs.push(Finding {
-                level: Level::Ok,
-                msg: format!("đã ghim {KEY_PER_APP}=0 và restart {}", self.app_name),
-            });
-        } else {
-            fs.push(Finding {
-                level: Level::Warn,
-                msg: format!("{KEY_PER_APP} đang bật — chạy `tongue doctor --fix` để ghim về 0 (không thì trạng thái enabled không tin được)"),
-            });
-        }
-        Ok(fs)
+        Ok(vec![
+            app::diagnose_bundle(&self.app_name),
+            diagnose_per_app_mode(fix, &self.app_name, &|| self.restart())?,
+        ])
     }
+}
+
+/// Phần khám `perAppMode` dùng chung cho cả strategy `process` lẫn `hotkey`:
+/// perAppMode bật = GoNhanh nhớ trạng thái theo từng app, khiến key
+/// gonhanh.enabled thành đồ giả (bẫy đã xác minh trong source).
+///
+/// `restart` chỉ được gọi khi `fix` và giá trị đang sai — strategy `hotkey`
+/// truyền vào closure không làm gì, vì nó KHÔNG được phép giết app.
+pub fn diagnose_per_app_mode(
+    fix: bool,
+    app_name: &str,
+    restart: &dyn Fn() -> Result<()>,
+) -> Result<Finding> {
+    let out = Command::new("defaults")
+        .args(["read", DEFAULTS_DOMAIN, KEY_PER_APP])
+        .output()?;
+    let val = String::from_utf8_lossy(&out.stdout).trim().to_string();
+    if !out.status.success() {
+        return Ok(Finding {
+            level: Level::Warn,
+            msg: format!("chưa đọc được defaults của {app_name} — app đã chạy lần đầu chưa?"),
+        });
+    }
+    if val == "0" {
+        return Ok(Finding {
+            level: Level::Ok,
+            msg: format!("{KEY_PER_APP} = 0"),
+        });
+    }
+    if fix {
+        let st = Command::new("defaults")
+            .args(["write", DEFAULTS_DOMAIN, KEY_PER_APP, "-bool", "NO"])
+            .status()?;
+        ensure!(st.success(), "defaults write {KEY_PER_APP} thất bại");
+        restart()?;
+        return Ok(Finding {
+            level: Level::Ok,
+            msg: format!("đã ghim {KEY_PER_APP}=0 cho {app_name}"),
+        });
+    }
+    Ok(Finding {
+        level: Level::Warn,
+        msg: format!("{KEY_PER_APP} đang bật — chạy `tongue doctor --fix` để ghim về 0 (không thì trạng thái enabled không tin được)"),
+    })
 }

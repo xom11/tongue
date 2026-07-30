@@ -9,7 +9,7 @@
 //!
 //! Logic nằm sau ba trait để test được bằng fake; FFI CoreGraphics ở cuối file.
 
-use anyhow::Result;
+use anyhow::{bail, Context, Result};
 use std::cell::Cell;
 use std::time::{Duration, Instant};
 
@@ -103,6 +103,237 @@ impl<'a> HotkeyCore<'a> {
             }
             std::thread::sleep(self.poll);
         }
+    }
+}
+
+// --- FFI: bắn chord ở tầng HID ------------------------------------------
+// Tap của GoNhanh nằm ở HID level nên thấy được sự kiện từ CGEventPost;
+// osascript thì KHÔNG (tap bỏ qua) — xem spec gốc, RustBridge.swift:855-859.
+
+use super::{app, chord, prefs};
+use crate::backend::Ime;
+use crate::doctor::{Finding, Level};
+use core_foundation_sys::base::{Boolean, CFRelease};
+use std::ffi::c_void;
+
+const DEFAULTS_DOMAIN: &str = "org.gonhanh.GoNhanh";
+const KEY_ENABLED: &str = "gonhanh.enabled";
+const KEY_SHORTCUT: &str = "gonhanh.shortcut.toggle";
+
+#[repr(C)]
+struct __CGEvent(c_void);
+type CGEventRef = *mut __CGEvent;
+#[repr(C)]
+struct __CGEventSource(c_void);
+type CGEventSourceRef = *mut __CGEventSource;
+
+const K_CG_EVENT_SOURCE_STATE_HID: i32 = 1; // kCGEventSourceStateHIDSystemState
+const K_CG_HID_EVENT_TAP: u32 = 0; // kCGHIDEventTap
+
+#[link(name = "CoreGraphics", kind = "framework")]
+extern "C" {
+    fn CGEventSourceCreate(state_id: i32) -> CGEventSourceRef;
+    fn CGEventCreateKeyboardEvent(
+        source: CGEventSourceRef,
+        virtual_key: u16,
+        key_down: bool,
+    ) -> CGEventRef;
+    fn CGEventSetFlags(event: CGEventRef, flags: u64);
+    fn CGEventPost(tap: u32, event: CGEventRef);
+}
+
+#[link(name = "ApplicationServices", kind = "framework")]
+extern "C" {
+    fn AXIsProcessTrusted() -> Boolean;
+}
+
+// Không giữ `chord` đã parse sẵn: HotkeyCore::set() chỉ gọi sender.send() ở
+// ĐÚNG MỘT trong bốn nhánh của nó (app đang chạy, is_on() != on, chưa fired).
+// Ba nhánh còn lại (đã khớp sẵn, app chết + muốn tắt, app chết + muốn bật rồi
+// launch) không bao giờ cần chord. Đọc chord ở đây — bên trong send(), không
+// phải lúc dựng sender — để ba nhánh kia không bị chặn bởi lỗi đọc chord (ca
+// điển hình: GoNhanh chưa từng chạy lần đầu nên defaults chưa có
+// gonhanh.shortcut.toggle, nhưng `tongue en` khi app đã tắt sẵn phải là no-op,
+// không phải lỗi môi trường).
+struct CgChordSender;
+
+impl ChordSender for CgChordSender {
+    fn send(&self) -> Result<()> {
+        let chord = doc_chord()?;
+        unsafe {
+            let src = CGEventSourceCreate(K_CG_EVENT_SOURCE_STATE_HID);
+            let down = CGEventCreateKeyboardEvent(src, chord.key_code, true);
+            let up = CGEventCreateKeyboardEvent(src, chord.key_code, false);
+            if down.is_null() || up.is_null() {
+                // Release đúng những gì THẬT SỰ được tạo ra — down và up có thể
+                // thành bại độc lập nhau (cùng nguồn src nhưng lời gọi riêng).
+                if !down.is_null() {
+                    CFRelease(down as _);
+                }
+                if !up.is_null() {
+                    CFRelease(up as _);
+                }
+                if !src.is_null() {
+                    CFRelease(src as _);
+                }
+                bail!("CGEventCreateKeyboardEvent trả về null");
+            }
+            CGEventSetFlags(down, chord.flags);
+            CGEventSetFlags(up, chord.flags);
+            CGEventPost(K_CG_HID_EVENT_TAP, down);
+            // 30ms giữa down và up — đúng khoảng đã nghiệm chứng là GoNhanh ăn.
+            std::thread::sleep(Duration::from_millis(30));
+            CGEventPost(K_CG_HID_EVENT_TAP, up);
+            CFRelease(down as _);
+            CFRelease(up as _);
+            if !src.is_null() {
+                CFRelease(src as _);
+            }
+        }
+        Ok(())
+    }
+}
+
+struct GonhanhLauncher {
+    app_name: String,
+}
+
+impl Launcher for GonhanhLauncher {
+    fn launch(&self) -> Result<()> {
+        // Ghi enabled=1 TRƯỚC khi open — app đọc defaults lúc khởi động.
+        let st = std::process::Command::new("defaults")
+            .args(["write", DEFAULTS_DOMAIN, KEY_ENABLED, "-bool", "YES"])
+            .status()?;
+        anyhow::ensure!(st.success(), "defaults write {KEY_ENABLED} thất bại");
+        app::launch(&self.app_name)
+    }
+}
+
+struct GonhanhState {
+    app_name: String,
+}
+
+impl StateSource for GonhanhState {
+    fn running(&self) -> Result<bool> {
+        app::is_running(&self.app_name)
+    }
+    fn enabled(&self) -> Result<Option<bool>> {
+        Ok(prefs::read_bool(DEFAULTS_DOMAIN, KEY_ENABLED))
+    }
+}
+
+fn doc_chord() -> Result<chord::Chord> {
+    let blob = prefs::read_data(DEFAULTS_DOMAIN, KEY_SHORTCUT).with_context(|| {
+        format!("không đọc được {KEY_SHORTCUT} — GoNhanh đã chạy lần đầu chưa?")
+    })?;
+    chord::parse(&blob)
+}
+
+pub struct HotkeyIme {
+    pub app_name: String,
+    pub timeout_ms: u64,
+    pub poll_ms: u64,
+    /// Sống suốt lần chạy tongue, KHÔNG nằm trong HotkeyCore: reconcile gọi
+    /// `set()` nhiều lượt và mỗi lượt dựng core mới, nên cờ phải ở đây thì chốt
+    /// "tối đa một chord" mới có tác dụng.
+    fired: Cell<bool>,
+}
+
+impl HotkeyIme {
+    pub fn new(app_name: String, timeout_ms: u64, poll_ms: u64) -> Self {
+        Self {
+            app_name,
+            timeout_ms,
+            poll_ms,
+            fired: Cell::new(false),
+        }
+    }
+
+    fn launcher(&self) -> GonhanhLauncher {
+        GonhanhLauncher {
+            app_name: self.app_name.clone(),
+        }
+    }
+
+    fn state(&self) -> GonhanhState {
+        GonhanhState {
+            app_name: self.app_name.clone(),
+        }
+    }
+}
+
+impl Ime for HotkeyIme {
+    /// Không đi qua HotkeyCore: đây là truy vấn đọc thuần, chỉ cần state chứ
+    /// không cần dựng launcher/sender đầy đủ. Vẫn phải trả lời được cả khi
+    /// chord chưa đọc được (GoNhanh chưa chạy lần đầu) — is_on() không đụng
+    /// tới chord nên không phụ thuộc gì vào việc parse nó có thành hay không.
+    fn is_on(&self) -> Result<bool> {
+        let state = self.state();
+        Ok(state.running()? && state.enabled()?.unwrap_or(false))
+    }
+
+    fn set(&self, on: bool) -> Result<()> {
+        let launcher = self.launcher();
+        let state = self.state();
+        // CgChordSender KHÔNG cầm chord đã parse sẵn — nó tự đọc bên trong
+        // send(), vì HotkeyCore::set() chỉ gọi tới sender ở đúng một nhánh (xem
+        // comment tại impl ChordSender). Ba nhánh còn lại (đã khớp sẵn, app
+        // chết + muốn tắt, app chết + muốn bật) không được phép bị chặn chỉ vì
+        // GoNhanh chưa từng chạy lần đầu nên chưa có chord trong defaults.
+        let sender = CgChordSender;
+        let core = HotkeyCore::new(
+            &sender,
+            &launcher,
+            &state,
+            Duration::from_millis(self.timeout_ms),
+            Duration::from_millis(self.poll_ms),
+            &self.fired,
+        );
+        core.set(on)
+    }
+
+    fn diagnose(&self, fix: bool) -> Result<Vec<Finding>> {
+        let mut fs = vec![app::diagnose_bundle(&self.app_name)];
+
+        // `hotkey` KHÔNG được phép giết app — đó là cả điểm của strategy này.
+        // Nên --fix ở đây ghim perAppMode mà không restart; giá trị mới có hiệu
+        // lực ở lần khởi động sau của GoNhanh.
+        fs.push(super::gonhanh::diagnose_per_app_mode(
+            fix,
+            &self.app_name,
+            &|| Ok(()),
+        )?);
+
+        // Kiểu hỏng khó đoán nhất: quyền cấp cho TIẾN TRÌNH CHỦ, không cho binary
+        // tongue. Thông điệp phải nói thẳng điều đó.
+        fs.push(if unsafe { AXIsProcessTrusted() } != 0 {
+            Finding {
+                level: Level::Ok,
+                msg: "Accessibility: tiến trình này được tin cậy".into(),
+            }
+        } else {
+            Finding {
+                level: Level::Fail,
+                msg: "thiếu quyền Accessibility — chord sẽ không tới được GoNhanh. \
+Quyền cấp cho TIẾN TRÌNH CHỦ chứ không cho binary tongue: nếu gõ tay trong terminal \
+thì cấp cho chính app terminal đó, nếu gọi từ Hammerspoon thì cấp cho Hammerspoon \
+(System Settings > Privacy & Security > Accessibility)"
+                    .into(),
+            }
+        });
+
+        fs.push(match doc_chord() {
+            Ok(c) => Finding {
+                level: Level::Ok,
+                msg: format!("chord toggle: {}", chord::describe(&c)),
+            },
+            Err(e) => Finding {
+                level: Level::Fail,
+                msg: format!("{e:#}"),
+            },
+        });
+
+        Ok(fs)
     }
 }
 
