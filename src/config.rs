@@ -17,7 +17,8 @@ pub struct Config {
 pub struct MacosConfig {
     /// Bộ gõ nào lo tiếng Việt: "gonhanh" | "app" | "system". Xem backend::macos.
     pub backend: String,
-    /// Cách điều khiển bộ gõ đó. v1 chỉ có "process" (xem spec cho hotkey/notify).
+    /// Cách điều khiển bộ gõ đó: "process" (kill/launch) | "hotkey" (giả lập
+    /// chord toggle, giữ app sống — chỉ dùng được với backend "gonhanh").
     pub strategy: String,
     pub source_vi: String,
     /// Mặc định TRÙNG source_vi — đúng cho mọi bộ gõ ngoài (layout giữ ABC, bit IME
@@ -187,5 +188,12 @@ mod tests {
     #[test]
     fn toml_hong_thi_bao_loi() {
         assert!(parse("[macos\nstrategy=").is_err());
+    }
+
+    #[test]
+    fn khai_strategy_hotkey() {
+        let c = parse("[macos]\nstrategy = \"hotkey\"\n").unwrap();
+        assert_eq!(c.macos.strategy, "hotkey");
+        assert_eq!(c.macos.backend, "gonhanh"); // vẫn là default
     }
 }

@@ -143,19 +143,27 @@ fn has_external_ime(_cfg: &config::Config) -> bool {
 
 #[cfg(target_os = "macos")]
 fn make_ime(cfg: &config::Config) -> anyhow::Result<Box<dyn backend::Ime>> {
-    use backend::macos::{app::AppIme, gonhanh::GonhanhIme, system::SystemIme};
-    anyhow::ensure!(
-        cfg.macos.strategy == "process",
-        "strategy '{}' chưa hỗ trợ (v1 chỉ có 'process')",
-        cfg.macos.strategy
-    );
+    use backend::macos::{app::AppIme, gonhanh::GonhanhIme, hotkey::HotkeyIme, system::SystemIme};
     let name = cfg.macos.app_name.clone();
-    Ok(match cfg.macos.backend.as_str() {
-        "gonhanh" => Box::new(GonhanhIme { app_name: name }),
-        "app" => Box::new(AppIme { app_name: name }),
-        "system" => Box::new(SystemIme { app_name: name }),
-        other => anyhow::bail!("backend '{other}' không hợp lệ (gonhanh|app|system)"),
-    })
+    Ok(
+        match (cfg.macos.backend.as_str(), cfg.macos.strategy.as_str()) {
+            ("gonhanh", "process") => Box::new(GonhanhIme { app_name: name }),
+            ("gonhanh", "hotkey") => Box::new(HotkeyIme::new(
+                name,
+                cfg.verify.timeout_ms,
+                cfg.verify.poll_ms,
+            )),
+            ("app", "process") => Box::new(AppIme { app_name: name }),
+            ("system", "process") => Box::new(SystemIme { app_name: name }),
+            (b @ ("app" | "system"), "hotkey") => anyhow::bail!(
+                "strategy 'hotkey' chỉ dùng được với backend 'gonhanh' — backend '{b}' không có chord toggle để giả lập"
+            ),
+            ("gonhanh" | "app" | "system", s) => {
+                anyhow::bail!("strategy '{s}' không hợp lệ (process|hotkey)")
+            }
+            (b, _) => anyhow::bail!("backend '{b}' không hợp lệ (gonhanh|app|system)"),
+        },
+    )
 }
 
 #[cfg(windows)]

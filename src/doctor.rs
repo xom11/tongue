@@ -81,15 +81,18 @@ pub fn run(fix: bool, cfg: &Config, ime: &dyn crate::backend::Ime) -> Result<boo
     }
 
     // 4. strategy
-    if cfg.macos.strategy == "process" {
+    if matches!(cfg.macos.strategy.as_str(), "process" | "hotkey") {
         fs.push(Finding {
             level: Level::Ok,
-            msg: "strategy = process".into(),
+            msg: format!("strategy = {}", cfg.macos.strategy),
         });
     } else {
         fs.push(Finding {
             level: Level::Fail,
-            msg: format!("strategy '{}' chưa hỗ trợ", cfg.macos.strategy),
+            msg: format!(
+                "strategy '{}' không hợp lệ (process|hotkey)",
+                cfg.macos.strategy
+            ),
         });
     }
 
