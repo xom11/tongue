@@ -19,4 +19,8 @@ windows-sys = { version = "0.59", features = [
   "Win32_Foundation",
   "Win32_UI_WindowsAndMessaging",
   "Win32_System_Memory",
+  # ProcessIdToSessionId + GetCurrentProcessId: phát hiện session 0 (service/SSH), nơi
+  # window station và namespace `Local\` không phải của người dùng — xem vkey.rs.
+  "Win32_System_RemoteDesktop",
+  "Win32_System_Threading",
 ] }

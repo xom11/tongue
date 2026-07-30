@@ -123,6 +123,19 @@ chỉ cần bật/tắt bằng process thì KHÔNG cần code mới — đặt `
 Shell-out dùng tên lệnh trần (`pgrep`, `defaults`, `open`, `killall`) — không
 hardcode đường dẫn tuyệt đối.
 
+**Trên Windows, session 0 là vùng chết — phải chặn, không được đoán.** Window
+station (`FindWindow`) và namespace `Local\` (`OpenFileMapping`) đều theo session,
+nên từ SSH/service (session 0) VKey của người dùng vừa không đọc được vừa không
+điều khiển được. Kiểu hỏng rất tệ nếu không chặn: `read_state()` thấy section
+trống → kết luận "VKey chưa chạy" → `set(true)` spawn một VKey THỨ HAI trong
+session 0, không hook được gì, chỉ làm rác và khiến `status` báo trạng thái tưởng
+tượng. Nay `in_service_session()` chặn ở cả `read_state()` lẫn `ensure_running()`.
+Muốn test từ xa thì chạy qua scheduled task `-LogonType Interactive`.
+
+**Mọi process con GUI phải cắt stdio** (`Stdio::null()` cả ba). VKey sống lâu hơn
+tongue; nếu nó thừa kế stdout/stderr thì bất cứ ai đọc output của tongue tới EOF
+— `$(tongue vi)`, pipe, ssh, CI — treo tới khi VKey chết, dù tongue đã thoát.
+
 ## Git
 
 - Commit message tiếng Việt, dạng `<phạm vi>: <nội dung>`.

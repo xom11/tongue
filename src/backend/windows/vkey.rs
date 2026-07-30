@@ -9,16 +9,39 @@ use crate::backend::{vkey_shm, Ime};
 use crate::doctor::{Finding, Level};
 use anyhow::{bail, Context, Result};
 use std::path::PathBuf;
+use std::process::Stdio;
 use std::time::{Duration, Instant};
 use windows_sys::Win32::Foundation::{CloseHandle, HWND};
 use windows_sys::Win32::System::Memory::{
     MapViewOfFile, OpenFileMappingW, UnmapViewOfFile, FILE_MAP_READ,
 };
+use windows_sys::Win32::System::RemoteDesktop::ProcessIdToSessionId;
+use windows_sys::Win32::System::Threading::GetCurrentProcessId;
 use windows_sys::Win32::UI::WindowsAndMessaging::{FindWindowW, PostMessageW};
 
 const WM_VKEY_SET_MODE: u32 = 0x0400 + 100; // WM_USER+100 — VKey SharedConstants.h
 const WINDOW_CLASS: &str = "VKeyTrayClass";
 const SECTION: &str = "Local\\VKeySharedState";
+
+/// Session 0 là session của service. Từ Vista nó bị tách hẳn khỏi desktop tương tác
+/// (Session 0 Isolation), và SSH của Windows chạy đúng ở đó.
+///
+/// Hai cơ chế tongue dùng đều THEO SESSION: window station (FindWindow) và namespace
+/// `Local\` (OpenFileMapping, thực chất là `Session\<n>\`). Nên từ session 0, VKey của
+/// người dùng vừa không đọc được vừa không điều khiển được — mà kiểu hỏng lại rất tệ:
+/// read_state() thấy section trống nên kết luận "VKey chưa chạy", rồi set(true) đi
+/// spawn một VKey THỨ HAI trong session 0. Nó không hook được desktop nào, chỉ ngồi đó
+/// làm rác và khiến `tongue status` báo một trạng thái hoàn toàn tưởng tượng.
+fn in_service_session() -> bool {
+    let mut sid = 0u32;
+    let ok = unsafe { ProcessIdToSessionId(GetCurrentProcessId(), &mut sid) };
+    ok != 0 && sid == 0
+}
+
+const SERVICE_SESSION_ERR: &str = "đang chạy trong session 0 (service hoặc SSH của Windows), \
+không với tới được desktop tương tác — window station và namespace `Local\\` đều theo session, \
+nên VKey của người dùng vừa không đọc được vừa không điều khiển được. \
+Hãy chạy từ chính session của người dùng, ví dụ scheduled task với `-LogonType Interactive`.";
 
 fn wide(s: &str) -> Vec<u16> {
     s.encode_utf16().chain(std::iter::once(0)).collect()
@@ -36,6 +59,11 @@ fn find_window() -> Option<HWND> {
 
 /// None = section không tồn tại = VKey không chạy (= mode en).
 pub fn read_state() -> Result<Option<bool>> {
+    // Ở session 0 thì "không thấy section" KHÔNG có nghĩa là VKey không chạy — nó chỉ có
+    // nghĩa là ta đang nhìn sai chỗ. Trả None ở đây là bịa dữ liệu, nên báo lỗi thẳng.
+    if in_service_session() {
+        bail!("{SERVICE_SESSION_ERR}");
+    }
     unsafe {
         let name = wide(SECTION);
         let h = OpenFileMappingW(FILE_MAP_READ, 0, name.as_ptr());
@@ -113,8 +141,19 @@ impl VkeyIme {
         if let Some(h) = find_window() {
             return Ok(h);
         }
+        // Chặn TRƯỚC khi spawn: đây là chỗ session 0 gây hại thật, không chỉ đọc sai.
+        if in_service_session() {
+            bail!("{SERVICE_SESSION_ERR}");
+        }
         let exe = self.discover_exe()?;
+        // stdio phải cắt hẳn. VKey là app GUI sống lâu hơn tongue; nếu nó thừa kế
+        // stdout/stderr của ta thì mọi thứ đọc output của tongue tới EOF sẽ treo cho tới
+        // khi VKey chết — `$(tongue vi)`, pipe, ssh, CI. Không phải giả thuyết: đúng cách
+        // này làm một lệnh ssh treo 2 phút trong khi tongue đã thoát từ lâu.
         std::process::Command::new(&exe)
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
             .spawn()
             .with_context(|| format!("không chạy được {}", exe.display()))?;
         // mutex nội bộ của VKey tự chống chạy trùng; chờ cửa sổ xuất hiện
