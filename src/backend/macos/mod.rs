@@ -8,6 +8,11 @@ pub mod chord;
 
 pub mod gonhanh;
 
+// HotkeyCore và ba trait chỉ có call site thật ở Task 4 (HotkeyIme) — tới lúc
+// đó chúng chưa ai gọi ngoài #[cfg(test)] là dead code hợp lệ.
+#[allow(dead_code)]
+pub mod hotkey;
+
 // Call site thật (đọc chord GoNhanh trong tiến trình) nằm ở Task 4 — tới lúc
 // đó `read_bool`/`read_data` chưa ai gọi ngoài #[cfg(test)] là dead code hợp lệ.
 #[allow(dead_code)]
