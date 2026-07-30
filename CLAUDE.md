@@ -132,9 +132,24 @@ session 0, không hook được gì, chỉ làm rác và khiến `status` báo t
 tượng. Nay `in_service_session()` chặn ở cả `read_state()` lẫn `ensure_running()`.
 Muốn test từ xa thì chạy qua scheduled task `-LogonType Interactive`.
 
-**Mọi process con GUI phải cắt stdio** (`Stdio::null()` cả ba). VKey sống lâu hơn
-tongue; nếu nó thừa kế stdout/stderr thì bất cứ ai đọc output của tongue tới EOF
-— `$(tongue vi)`, pipe, ssh, CI — treo tới khi VKey chết, dù tongue đã thoát.
+**Spawn process con trên Windows phải qua `spawn_no_inherit` (CreateProcessW với
+`bInheritHandles = FALSE`), KHÔNG dùng `std::process::Command`.** Trên Windows,
+"cắt stdio" và "cắt thừa kế handle" là hai việc khác nhau: `Stdio::null()` chỉ đặt
+ba std handle của con thành NUL, còn Rust vẫn gọi `CreateProcessW` với
+`bInheritHandles = TRUE`, mà Windows thì thừa kế TẤT CẢ handle đang bật cờ
+inheritable của cha. Nên pipe stdout do caller tạo vẫn đi sang VKey, VKey sống lâu
+hơn tongue, và bên đọc treo vô hạn dù tongue đã thoát. Đã đo A/B trên a14-win,
+cold-start thật: bản `Stdio::null()` → tongue thoát sau 184ms, EOF **không** tới
+trong 12s; bản `bInheritHandles=FALSE` → EOF tới đúng lúc thoát, 193ms.
+
+**`run_as_admin` KHÔNG làm shared memory đọc trượt** — đã nghiệm chứng 30/07/2026
+trên a14-win: VKey chạy elevated (High IL), tongue chạy Medium, `OpenFileMappingW`
+vẫn trả HANDLE HỢP LỆ (mandatory integrity chặn ghi-lên, không chặn đọc-lên), và
+`FindWindow` vẫn thấy cửa sổ (UIPI chặn message, không chặn liệt kê). Nghĩa là
+`Ok(None) = VKey không chạy` vẫn là suy luận đúng, không cần phân biệt
+ERROR_FILE_NOT_FOUND với ERROR_ACCESS_DENIED. Chỗ duy nhất hỏng là `PostMessage`
+bị UIPI nuốt → verify của reconcile trượt → exit 1 sau ~1s kèm gợi ý chạy doctor,
+và doctor chỉ đúng thủ phạm. Đúng như thiết kế, không phải sửa gì.
 
 ## Git
 
