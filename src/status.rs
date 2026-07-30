@@ -38,13 +38,33 @@ pub fn infer_mac(
 }
 
 // Call site thật nằm trong main.rs dưới cfg(windows); test riêng chạy trên mọi OS.
+//
+// Cùng hình dạng và cùng THỨ TỰ NHÁNH như infer_mac, vì Windows nay cũng có hai cần
+// gạt: layout phân biệt zh, còn bit VKey phân biệt vi với en (source_vi trùng
+// source_en = "0409"). Trước đây hàm này chỉ nhìn bit IME nên không bao giờ thấy zh.
 #[allow(dead_code)]
-pub fn infer_win(ime_on: bool) -> String {
-    if ime_on {
-        "vi".into()
-    } else {
-        "en".into()
+pub fn infer_win(
+    ime_on: bool,
+    layout: &str,
+    sources: &crate::mode::Sources,
+) -> (String, Option<String>) {
+    if layout == sources.zh {
+        let drift = ime_on.then(|| {
+            "VKey đang bật cùng layout tiếng Trung — chạy `tongue zh` hoặc `tongue vi` để dọn"
+                .into()
+        });
+        return ("zh".into(), drift);
     }
+    if layout == sources.vi && sources.vi != sources.en {
+        return ("vi".into(), None);
+    }
+    if layout == sources.en || layout == sources.vi {
+        return (if ime_on { "vi" } else { "en" }.into(), None);
+    }
+    (
+        "unknown".into(),
+        Some(format!("layout lạ: {layout} (LANGID)")),
+    )
 }
 
 pub fn render_human(s: &Snapshot) -> String {
@@ -140,10 +160,41 @@ mod tests {
         assert!(drift.unwrap().contains("com.apple.keylayout.US"));
     }
 
+    /// LANGID kieu Windows.
+    fn win_sources() -> Sources {
+        Sources {
+            vi: "0409".into(),
+            en: "0409".into(),
+            zh: "0804".into(),
+        }
+    }
+
     #[test]
-    fn win_suy_ra_tu_bit() {
-        assert_eq!(infer_win(true), "vi");
-        assert_eq!(infer_win(false), "en");
+    fn win_bit_vkey_phan_biet_vi_voi_en() {
+        let s = win_sources();
+        assert_eq!(infer_win(true, "0409", &s), ("vi".into(), None));
+        assert_eq!(infer_win(false, "0409", &s), ("en".into(), None));
+    }
+
+    /// Hoi quy: truoc day infer_win chi nhin bit IME nen zh khong bao gio hien ra.
+    #[test]
+    fn win_layout_tieng_trung_la_zh() {
+        let s = win_sources();
+        assert_eq!(infer_win(false, "0804", &s), ("zh".into(), None));
+    }
+
+    #[test]
+    fn win_vkey_bat_cung_layout_trung_thi_bao_lech() {
+        let (mode, drift) = infer_win(true, "0804", &win_sources());
+        assert_eq!(mode, "zh");
+        assert!(drift.is_some());
+    }
+
+    #[test]
+    fn win_layout_la_thi_unknown() {
+        let (mode, drift) = infer_win(false, "0411", &win_sources());
+        assert_eq!(mode, "unknown");
+        assert!(drift.unwrap().contains("0411"));
     }
 
     #[test]

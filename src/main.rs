@@ -90,7 +90,7 @@ fn run() -> anyhow::Result<()> {
 }
 
 fn switch(mode: Mode, platform: Platform, cfg: &config::Config) -> anyhow::Result<()> {
-    let Some(want) = desired(mode, platform, &cfg.macos.sources(), has_external_ime(cfg)) else {
+    let Some(want) = desired(mode, platform, &sources(cfg), has_external_ime(cfg)) else {
         anyhow::bail!("mode {} không có trên nền tảng này", mode.as_str());
     };
     let layout = make_layout();
@@ -115,7 +115,19 @@ fn make_layout() -> Box<dyn backend::Layout> {
 
 #[cfg(windows)]
 fn make_layout() -> Box<dyn backend::Layout> {
-    Box::new(backend::NoopLayout)
+    Box::new(backend::windows::layout::WinLayout)
+}
+
+/// Bảng source của nền tảng đang chạy. Cùng khuôn với make_layout/has_external_ime:
+/// cfg-gate đúng một chỗ thay vì rải `#[cfg]` vào giữa logic.
+#[cfg(target_os = "macos")]
+fn sources(cfg: &config::Config) -> mode::Sources {
+    cfg.macos.sources()
+}
+
+#[cfg(windows)]
+fn sources(cfg: &config::Config) -> mode::Sources {
+    cfg.windows.sources()
 }
 
 /// Có app ngoài lo tiếng Việt không? false = macOS tự lo qua input source.
@@ -168,11 +180,13 @@ fn snapshot(cfg: &config::Config) -> anyhow::Result<status::Snapshot> {
 
 #[cfg(windows)]
 fn snapshot(cfg: &config::Config) -> anyhow::Result<status::Snapshot> {
+    let layout = backend::windows::layout::current_langid()?;
     let ime_on = make_ime(cfg)?.is_on()?;
+    let (mode, drift) = status::infer_win(ime_on, &layout, &cfg.windows.sources());
     Ok(status::Snapshot {
-        mode: status::infer_win(ime_on),
-        layout: None,
+        mode,
+        layout: Some(layout),
         ime_on,
-        drift: None,
+        drift,
     })
 }

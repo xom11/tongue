@@ -41,6 +41,11 @@ impl Default for MacosConfig {
 }
 
 impl MacosConfig {
+    // Đối xứng với WindowsConfig::sources: từ khi main.rs có `sources()` cfg-gate theo
+    // nền tảng, hàm này chỉ còn call site dưới cfg(target_os = "macos"), nên trên build
+    // Windows nó là dead code hợp lệ. (Trước đây switch() gọi cfg.macos.sources() vô
+    // điều kiện nên cả hai nền tảng đều dùng.)
+    #[allow(dead_code)]
     pub fn sources(&self) -> crate::mode::Sources {
         crate::mode::Sources {
             vi: self.source_vi.clone(),
@@ -50,10 +55,42 @@ impl MacosConfig {
     }
 }
 
-#[derive(Debug, Default, Deserialize, PartialEq)]
+#[derive(Debug, Deserialize, PartialEq)]
 #[serde(default)]
 pub struct WindowsConfig {
     pub vkey_path: String,
+    /// LANGID 4 chu so hex, KHONG phai KLID 8 chu so — xem backend::hkl de biet vi sao.
+    ///
+    /// vi va en mac dinh TRUNG nhau ("0409" = US): VKey dung chinh layout US va bit
+    /// bat/tat cua no phan biet vi voi en, y nhu bo go ngoai tren macOS. zh thi layout
+    /// moi la thu phan biet, nen no phai khac.
+    pub source_vi: String,
+    pub source_en: String,
+    pub source_zh: String,
+}
+
+impl Default for WindowsConfig {
+    fn default() -> Self {
+        Self {
+            vkey_path: String::new(),
+            source_vi: "0409".into(),
+            source_en: "0409".into(),
+            source_zh: "0804".into(),
+        }
+    }
+}
+
+impl WindowsConfig {
+    // Call site thật chỉ có trong main.rs dưới cfg(windows) (sources() và snapshot());
+    // trên build macOS đây là dead code hợp lệ, cùng lý do như backend::hkl.
+    #[allow(dead_code)]
+    pub fn sources(&self) -> crate::mode::Sources {
+        crate::mode::Sources {
+            vi: self.source_vi.clone(),
+            en: self.source_en.clone(),
+            zh: self.source_zh.clone(),
+        }
+    }
 }
 
 #[derive(Debug, Deserialize, PartialEq)]

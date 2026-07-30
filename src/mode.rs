@@ -73,7 +73,12 @@ impl Platform {
     }
 }
 
-/// None = mode không tồn tại trên nền tảng này (zh trên Windows).
+/// None = mode không tồn tại trên nền tảng này.
+///
+/// Từ khi Windows có Layout thật thì cả hai nền tảng đều đủ ba mode, nên thực tế hàm
+/// này luôn trả Some. Giữ `Option` là cố ý: nó là chỗ diễn tả "nền tảng này không có
+/// mode đó" — vẫn còn khả năng xảy ra (ví dụ một nền tảng chưa có bộ gõ tiếng Trung),
+/// và cái giá chỉ là một nhánh `let Some(..) else` trong main.rs.
 ///
 /// `has_external_ime = false` (backend `system`) nghĩa là không có app ngoài nào
 /// để bật — tiếng Việt hoàn toàn do `sources.vi` lo, nên `ime_on` phải là false
@@ -98,15 +103,22 @@ pub fn desired(
             layout: Some(sources.zh.clone()),
             ime_on: false,
         }),
+        // Windows nay cung gat CA HAI can nhu macOS. Truoc day no de layout = None va
+        // zh = None, nen `tongue zh` khong ton tai va chuyen tu zh ve vi thi layout
+        // tieng Trung con nguyen. Co Layout that (backend::windows::layout) thi ba mode
+        // deu phai khai layout, neu khong reconcile khong keo lai duoc.
         (Platform::Windows, Mode::Vi) => Some(Desired {
-            layout: None,
+            layout: Some(sources.vi.clone()),
             ime_on: has_external_ime,
         }),
         (Platform::Windows, Mode::En) => Some(Desired {
-            layout: None,
+            layout: Some(sources.en.clone()),
             ime_on: false,
         }),
-        (Platform::Windows, Mode::Zh) => None,
+        (Platform::Windows, Mode::Zh) => Some(Desired {
+            layout: Some(sources.zh.clone()),
+            ime_on: false,
+        }),
     }
 }
 
@@ -179,17 +191,43 @@ mod tests {
         assert!(!d.ime_on);
     }
 
-    #[test]
-    fn win_khong_dung_layout() {
-        let s = app_sources();
-        let vi = desired(Mode::Vi, Platform::Windows, &s, true).unwrap();
-        assert!(vi.layout.is_none() && vi.ime_on);
-        let en = desired(Mode::En, Platform::Windows, &s, true).unwrap();
-        assert!(en.layout.is_none() && !en.ime_on);
+    /// LANGID kieu Windows: vi va en dung chung layout US, zh co layout rieng.
+    fn win_sources() -> Sources {
+        Sources {
+            vi: "0409".into(),
+            en: "0409".into(),
+            zh: "0804".into(),
+        }
     }
 
     #[test]
-    fn win_khong_co_zh() {
-        assert!(desired(Mode::Zh, Platform::Windows, &app_sources(), true).is_none());
+    fn win_vi_giu_layout_us_va_bat_vkey() {
+        let d = desired(Mode::Vi, Platform::Windows, &win_sources(), true).unwrap();
+        assert_eq!(d.layout.as_deref(), Some("0409"));
+        assert!(d.ime_on);
+    }
+
+    #[test]
+    fn win_en_giu_layout_us_va_tat_vkey() {
+        let d = desired(Mode::En, Platform::Windows, &win_sources(), true).unwrap();
+        assert_eq!(d.layout.as_deref(), Some("0409"));
+        assert!(!d.ime_on);
+    }
+
+    /// Hoi quy: truoc day zh tren Windows tra None nen `tongue zh` exit 2, va Tab+Q
+    /// cua chu repo (tieng Trung) khong the chuyen sang tongue duoc.
+    #[test]
+    fn win_zh_doi_layout_va_tat_vkey() {
+        let d = desired(Mode::Zh, Platform::Windows, &win_sources(), true).unwrap();
+        assert_eq!(d.layout.as_deref(), Some("0804"));
+        assert!(!d.ime_on);
+    }
+
+    /// Roi khoi zh thi PHAI keo layout ve US, khong chi tat VKey.
+    #[test]
+    fn win_tu_zh_ve_vi_phai_khai_lai_layout() {
+        let zh = desired(Mode::Zh, Platform::Windows, &win_sources(), true).unwrap();
+        let vi = desired(Mode::Vi, Platform::Windows, &win_sources(), true).unwrap();
+        assert_ne!(zh.layout, vi.layout);
     }
 }

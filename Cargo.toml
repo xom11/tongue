@@ -28,4 +28,6 @@ windows-sys = { version = "0.59", features = [
   # không hề nhắc tới Security.
   "Win32_System_Threading",
   "Win32_Security",
+  # LoadKeyboardLayoutW + GetKeyboardLayout: doi input locale cho mode zh.
+  "Win32_UI_Input_KeyboardAndMouse",
 ] }

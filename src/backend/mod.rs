@@ -7,6 +7,11 @@
 #[allow(dead_code)]
 pub mod vkey_shm;
 
+// Cùng lý do như vkey_shm: chuẩn hoá HKL là code thuần nên để ngoài windows/ cho test
+// chạy được trên mọi OS; call site thật chỉ có trong windows/layout.rs.
+#[allow(dead_code)]
+pub mod hkl;
+
 pub trait Layout {
     fn current(&self) -> anyhow::Result<String>;
     fn select(&self, id: &str) -> anyhow::Result<()>;
@@ -21,21 +26,6 @@ pub trait Ime {
     /// Mặc định: backend không có gì riêng để khám.
     fn diagnose(&self, _fix: bool) -> anyhow::Result<Vec<crate::doctor::Finding>> {
         Ok(Vec::new())
-    }
-}
-
-/// Windows không đụng layout (US cố định) — desired.layout luôn None ở đó.
-// Chỉ được construct trong main.rs dưới cfg(windows); trên build không phải windows
-// đây là dead code hợp lệ.
-#[allow(dead_code)]
-pub struct NoopLayout;
-
-impl Layout for NoopLayout {
-    fn current(&self) -> anyhow::Result<String> {
-        Ok(String::new())
-    }
-    fn select(&self, _id: &str) -> anyhow::Result<()> {
-        Ok(())
     }
 }
 
