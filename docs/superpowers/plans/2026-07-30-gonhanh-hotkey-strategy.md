@@ -244,6 +244,12 @@ git commit -m "macos: parser chord toggle của GoNhanh (thuần, test không c�
 
 `src/backend/macos/mod.rs` — chèn `pub mod prefs;` giữ thứ tự chữ cái (sau `gonhanh`, trước `system`).
 
+Kèm `#[allow(dead_code)]` và một comment tiếng Việt giải thích, y như `chord`
+ngay phía trên và như `vkey_shm`/`hkl` trong `src/backend/mod.rs:6-12`: call site
+thật của `prefs` nằm ở Task 4, nên tới lúc đó nó là dead code hợp lệ. Thiếu
+attribute này là `cargo build` ra warning và cả hai lệnh `cargo clippy -D warnings`
+đỏ — đã xảy ra thật ở Task 1.
+
 - [ ] **Step 2: Viết file kèm test**
 
 Tạo `src/backend/macos/prefs.rs`:
@@ -370,17 +376,32 @@ mod tests {
 
 - [ ] **Step 3: Chạy test**
 
-Run: `cargo test --lib prefs`
+Run: `cargo test prefs`
 Expected: PASS (1 test chạy, 1 ignored).
+
+(Crate này là binary-only — không có `src/lib.rs` — nên `cargo test --lib` báo
+`no library targets found`. Lọc theo tên như trên.)
 
 - [ ] **Step 4: Chạy test thật để nghiệm chứng FFI đúng**
 
-Run: `cargo test --lib prefs -- --ignored --nocapture`
+Run: `cargo test prefs -- --ignored --nocapture`
 Expected: PASS, in ra `blob 33 byte: {"keyCode":49,"modifiers":393216}` và `chord: Ctrl+Shift+Space`.
 
 Nếu blob rỗng hoặc test panic: FFI sai — dừng lại sửa trước khi đi tiếp, các task sau đều dựa lên đây.
 
-- [ ] **Step 5: Commit**
+- [ ] **Step 5: Chạy đủ gate trước khi commit**
+
+```bash
+cargo test
+cargo build
+cargo fmt --check
+cargo clippy --all-targets -- -D warnings
+cargo clippy --all-targets --target x86_64-pc-windows-msvc -- -D warnings
+```
+Expected: PASS cả 5, `cargo build` 0 warning. Nếu đỏ vì `dead_code` thì Step 1
+chưa làm đúng.
+
+- [ ] **Step 6: Commit**
 
 ```bash
 git add src/backend/macos/mod.rs src/backend/macos/prefs.rs
@@ -404,6 +425,11 @@ git commit -m "macos: đọc defaults qua CFPreferences (defaults read cắt blo
 - [ ] **Step 1: Đăng ký module**
 
 `src/backend/macos/mod.rs` — chèn `pub mod hotkey;` sau `pub mod gonhanh;`.
+
+Kèm `#[allow(dead_code)]` và comment tiếng Việt như `chord`/`prefs` phía trên: cả
+`HotkeyCore` lẫn ba trait chỉ có call site thật ở Task 4 (`HotkeyIme`), nên tới lúc
+đó chúng là dead code hợp lệ. Thiếu attribute là `cargo build` warning và cả hai
+lệnh `cargo clippy -D warnings` đỏ — đã xảy ra thật ở Task 1.
 
 - [ ] **Step 2: Viết test trước, cùng khung trait và impl rỗng**
 
@@ -734,8 +760,11 @@ mod tests {
 
 - [ ] **Step 3: Chạy test để chắc nó fail**
 
-Run: `cargo test --lib hotkey`
+Run: `cargo test hotkey`
 Expected: FAIL — panic `not implemented` ở cả 9 test.
+
+(Crate binary-only, không có `src/lib.rs` — `cargo test --lib` sẽ báo
+`no library targets found`. Lọc theo tên như trên.)
 
 - [ ] **Step 4: Cài đặt `is_on` và `set`**
 
@@ -790,10 +819,22 @@ Thay hai hàm `unimplemented!()`:
 
 - [ ] **Step 5: Chạy lại test**
 
-Run: `cargo test --lib hotkey`
+Run: `cargo test hotkey`
 Expected: PASS, 9 test.
 
-- [ ] **Step 6: Commit**
+- [ ] **Step 6: Chạy đủ gate trước khi commit**
+
+```bash
+cargo test
+cargo build
+cargo fmt --check
+cargo clippy --all-targets -- -D warnings
+cargo clippy --all-targets --target x86_64-pc-windows-msvc -- -D warnings
+```
+Expected: PASS cả 5, `cargo build` 0 warning. Nếu đỏ vì `dead_code` thì Step 1
+chưa làm đúng.
+
+- [ ] **Step 7: Commit**
 
 ```bash
 git add src/backend/macos/mod.rs src/backend/macos/hotkey.rs
