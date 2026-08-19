@@ -7,7 +7,18 @@
 //! trùng 2–6 chord và lật mode qua lại. Nên `set()` phải TỰ CHỜ XÁC NHẬN, và
 //! bắn TỐI ĐA MỘT chord cho mỗi lần chạy tongue.
 //!
-//! Logic nằm sau ba trait để test được bằng fake; FFI CoreGraphics ở cuối file.
+//! VẾ THỨ HAI, và nó KHÔNG suy ra được từ vế trên: chốt "một chord mỗi lần
+//! chạy" là một `Cell` nên chỉ có tác dụng trong MỘT tiến trình. Cửa sổ
+//! 87–286ms đó cũng chính là cửa sổ để một tiến trình tongue THỨ HAI đọc phải
+//! trạng thái cũ. Đo trên máy thật 19/08/2026: rời terminal sang trình duyệt
+//! làm Hammerspoon (khôi phục chế độ theo app) và tongue.nvim (`restore_on_
+//! unfocus`) cùng phát `tongue vi`, cách nhau 495ms; khi hai lời gọi rơi vào
+//! trong cửa sổ trên thì cả hai đọc "đang tắt", mỗi bên bắn một chord, GoNhanh
+//! bật rồi tắt, và CẢ HAI thoát 1 với `VerifyFailed`. Nên `set()` còn phải chạy
+//! trong một khoá LIÊN TIẾN TRÌNH (`Gate`), và lần đọc trạng thái quyết định có
+//! bắn hay không phải nằm TRONG khoá đó.
+//!
+//! Logic nằm sau bốn trait để test được bằng fake; FFI CoreGraphics ở cuối file.
 
 use anyhow::{bail, Context, Result};
 use std::cell::Cell;
@@ -28,10 +39,25 @@ pub trait StateSource {
     fn enabled(&self) -> Result<Option<bool>>;
 }
 
+/// Vật giữ khoá: việc duy nhất của nó là sống. Nhả khi bị drop.
+pub trait GateGuard {}
+
+/// Khoá liên TIẾN TRÌNH bọc quanh cụm đọc trạng thái → bắn chord → chờ xác nhận.
+///
+/// Cờ `fired` chốt "một chord mỗi lần chạy" trong phạm vi MỘT tiến trình; cái
+/// này chốt phần còn lại. Xem bất biến ở đầu file để biết vì sao chốt trong
+/// một tiến trình là chưa đủ.
+pub trait Gate {
+    /// Chặn tới khi giành được quyền độc chiếm. `Ok(None)` = hết hạn chờ mà
+    /// tiến trình tongue khác vẫn đang giữ.
+    fn enter(&self) -> Result<Option<Box<dyn GateGuard>>>;
+}
+
 pub struct HotkeyCore<'a> {
     sender: &'a dyn ChordSender,
     launcher: &'a dyn Launcher,
     state: &'a dyn StateSource,
+    gate: &'a dyn Gate,
     timeout: Duration,
     poll: Duration,
     /// MƯỢN từ bên ngoài, không sở hữu: `reconcile` gọi `Ime::set()` nhiều lượt
@@ -46,6 +72,7 @@ impl<'a> HotkeyCore<'a> {
         sender: &'a dyn ChordSender,
         launcher: &'a dyn Launcher,
         state: &'a dyn StateSource,
+        gate: &'a dyn Gate,
         timeout: Duration,
         poll: Duration,
         fired: &'a Cell<bool>,
@@ -54,6 +81,7 @@ impl<'a> HotkeyCore<'a> {
             sender,
             launcher,
             state,
+            gate,
             timeout,
             poll,
             fired,
@@ -67,6 +95,16 @@ impl<'a> HotkeyCore<'a> {
     }
 
     pub fn set(&self, on: bool) -> Result<()> {
+        // MỌI thứ dưới đây — đọc trạng thái, bắn chord, chờ xác nhận — phải nằm
+        // TRỌN trong khoá. Đọc trước khi vào khoá là đọc phải trạng thái mà một
+        // tiến trình tongue khác đang dở tay đổi: cả hai thấy "đang tắt", cả
+        // hai bắn chord, GoNhanh bật rồi tắt.
+        let Some(_khoa) = self.gate.enter()? else {
+            // Hết hạn chờ mà bên kia vẫn giữ. Bắn chord lúc này là tái lập đúng
+            // cái lỗi vừa chặn, nên không bắn — trả về để reconcile đọc lại
+            // trạng thái thật rồi tự quyết định VerifyFailed.
+            return Ok(());
+        };
         if !self.state.running()? {
             if !on {
                 return Ok(()); // app chết = đã là `en`
@@ -222,6 +260,88 @@ impl StateSource for GonhanhState {
     }
 }
 
+/// Khoá liên tiến trình dựa trên một file trống dùng chung.
+///
+/// File chỉ mang vai khoá, KHÔNG giữ trạng thái — nguồn chân lý vẫn là hệ
+/// thống, đúng như bất biến của repo. Khoá là advisory và gắn với file
+/// description, nên kernel tự nhả khi tiến trình chết: một tongue bị kill giữa
+/// chừng không để lại khoá chết.
+pub struct FileGate {
+    path: std::path::PathBuf,
+    cho: Duration,
+}
+
+/// Nơi đặt khoá — cùng một đường dẫn cho mọi tiến trình tongue của CÙNG một
+/// người dùng. `~/Library/Caches` chứ không phải `~/.config`: đây là thứ dựng
+/// lại được bất cứ lúc nào, không phải cấu hình.
+fn duong_khoa() -> std::path::PathBuf {
+    dirs::cache_dir()
+        .unwrap_or_else(std::env::temp_dir)
+        .join("tongue/switch.lock")
+}
+
+impl FileGate {
+    pub fn new(path: &std::path::Path, cho: Duration) -> Result<Self> {
+        if let Some(cha) = path.parent() {
+            std::fs::create_dir_all(cha)
+                .with_context(|| format!("không tạo được {}", cha.display()))?;
+        }
+        Ok(Self {
+            path: path.to_path_buf(),
+            cho,
+        })
+    }
+}
+
+/// Giữ khoá bằng cách giữ file mở. Sở hữu `File` chứ không mượn: nhờ vậy nó
+/// không dính lifetime của gate và cất đi đâu cũng được.
+struct FileGuard {
+    file: std::fs::File,
+}
+
+impl GateGuard for FileGuard {}
+
+impl Drop for FileGuard {
+    fn drop(&mut self) {
+        let _ = self.file.unlock();
+    }
+}
+
+/// Nhịp hỏi lại khi khoá đang bận. Nhỏ hơn hẳn 87ms — cận dưới của thời gian
+/// GoNhanh ghi `gonhanh.enabled` — để lần chạy đang chờ vào được gần như ngay
+/// khi bên kia nhả, thay vì ngủ qua mất cả cửa sổ đó.
+const NHIP_CHO_KHOA: Duration = Duration::from_millis(5);
+
+impl Gate for FileGate {
+    fn enter(&self) -> Result<Option<Box<dyn GateGuard>>> {
+        let file = std::fs::OpenOptions::new()
+            .create(true)
+            .truncate(false)
+            .write(true)
+            .open(&self.path)
+            .with_context(|| format!("không mở được khoá {}", self.path.display()))?;
+        // MỖI lời gọi mở file RIÊNG: khoá gắn với file description chứ không
+        // với đường dẫn, nên hai lần mở cùng một file vẫn tranh nhau thật — kể
+        // cả khi chúng nằm trong cùng một tiến trình.
+        let han = Instant::now() + self.cho;
+        loop {
+            match file.try_lock() {
+                Ok(()) => return Ok(Some(Box::new(FileGuard { file }))),
+                Err(std::fs::TryLockError::WouldBlock) => {
+                    if Instant::now() >= han {
+                        return Ok(None);
+                    }
+                    std::thread::sleep(NHIP_CHO_KHOA);
+                }
+                Err(std::fs::TryLockError::Error(e)) => {
+                    return Err(e)
+                        .with_context(|| format!("không khoá được {}", self.path.display()));
+                }
+            }
+        }
+    }
+}
+
 fn doc_chord() -> Result<chord::Chord> {
     let blob = prefs::read_data(DEFAULTS_DOMAIN, KEY_SHORTCUT).with_context(|| {
         format!("không đọc được {KEY_SHORTCUT} — GoNhanh đã chạy lần đầu chưa?")
@@ -281,10 +401,15 @@ impl Ime for HotkeyIme {
         // chết + muốn tắt, app chết + muốn bật) không được phép bị chặn chỉ vì
         // GoNhanh chưa từng chạy lần đầu nên chưa có chord trong defaults.
         let sender = CgChordSender;
+        // Ngân sách chờ khoá = ngân sách verify. Bên đang giữ khoá cũng bị chính
+        // `cho_toi` chặn trên ở đúng con số đó, nên chờ lâu hơn là chờ một thứ
+        // đã bỏ cuộc.
+        let gate = FileGate::new(&duong_khoa(), Duration::from_millis(self.timeout_ms))?;
         let core = HotkeyCore::new(
             &sender,
             &launcher,
             &state,
+            &gate,
             Duration::from_millis(self.timeout_ms),
             Duration::from_millis(self.poll_ms),
             &self.fired,
@@ -381,6 +506,19 @@ thì cấp cho chính app terminal đó, nếu gọi từ Hammerspoon thì cấp
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::atomic::{AtomicU32, Ordering};
+    use std::sync::{Barrier, Mutex};
+
+    /// Không khoá gì cả — cho các test một-lần-chạy, nơi tuần tự hoá không phải
+    /// thứ đang được kiểm.
+    struct KhongKhoa;
+    struct GuardRong;
+    impl GateGuard for GuardRong {}
+    impl Gate for KhongKhoa {
+        fn enter(&self) -> Result<Option<Box<dyn GateGuard>>> {
+            Ok(Some(Box::new(GuardRong)))
+        }
+    }
 
     /// enabled chỉ đổi sau `do_tre` lần đọc — mô phỏng 87–286ms trễ ghi defaults
     /// mà reconcile poll 50ms sẽ đâm phải.
@@ -488,7 +626,7 @@ mod tests {
         };
         let lc = LauncherKhongDuocGoi;
         let fired = Cell::new(false);
-        let core = HotkeyCore::new(&sender, &lc, &st, ms(1000), ms(1), &fired);
+        let core = HotkeyCore::new(&sender, &lc, &st, &KhongKhoa, ms(1000), ms(1), &fired);
         core.set(true).unwrap();
         assert_eq!(sender.so_lan.get(), 1, "phải bắn đúng 1 chord");
         assert!(core.is_on().unwrap(), "phải kết thúc ở trạng thái bật");
@@ -504,7 +642,7 @@ mod tests {
         };
         let lc = LauncherKhongDuocGoi;
         let fired = Cell::new(false);
-        let core = HotkeyCore::new(&sender, &lc, &st, ms(20), ms(1), &fired);
+        let core = HotkeyCore::new(&sender, &lc, &st, &KhongKhoa, ms(20), ms(1), &fired);
         core.set(true).unwrap();
         core.set(true).unwrap();
         core.set(true).unwrap();
@@ -524,7 +662,7 @@ mod tests {
         let lc = LauncherKhongDuocGoi;
         let fired = Cell::new(false);
         for _ in 0..3 {
-            let core = HotkeyCore::new(&sender, &lc, &st, ms(10), ms(1), &fired);
+            let core = HotkeyCore::new(&sender, &lc, &st, &KhongKhoa, ms(10), ms(1), &fired);
             core.set(true).unwrap();
         }
         assert_eq!(sender.so_lan.get(), 1, "cờ fired phải sống ngoài core");
@@ -540,7 +678,7 @@ mod tests {
         };
         let lc = LauncherKhongDuocGoi;
         let fired = Cell::new(false);
-        let core = HotkeyCore::new(&sender, &lc, &st, ms(30), ms(1), &fired);
+        let core = HotkeyCore::new(&sender, &lc, &st, &KhongKhoa, ms(30), ms(1), &fired);
         let t0 = Instant::now();
         core.set(true).unwrap();
         let mat = t0.elapsed();
@@ -562,7 +700,7 @@ mod tests {
             state: &st,
         };
         let fired = Cell::new(false);
-        let core = HotkeyCore::new(&sender, &lc, &st, ms(200), ms(1), &fired);
+        let core = HotkeyCore::new(&sender, &lc, &st, &KhongKhoa, ms(200), ms(1), &fired);
         core.set(true).unwrap();
         assert_eq!(lc.so_lan.get(), 1);
         assert_eq!(
@@ -582,7 +720,7 @@ mod tests {
         };
         let lc = LauncherKhongDuocGoi;
         let fired = Cell::new(false);
-        let core = HotkeyCore::new(&sender, &lc, &st, ms(200), ms(1), &fired);
+        let core = HotkeyCore::new(&sender, &lc, &st, &KhongKhoa, ms(200), ms(1), &fired);
         core.set(false).unwrap();
         assert_eq!(sender.so_lan.get(), 0);
     }
@@ -596,7 +734,7 @@ mod tests {
         };
         let lc = LauncherKhongDuocGoi;
         let fired = Cell::new(false);
-        let core = HotkeyCore::new(&sender, &lc, &st, ms(200), ms(1), &fired);
+        let core = HotkeyCore::new(&sender, &lc, &st, &KhongKhoa, ms(200), ms(1), &fired);
         core.set(true).unwrap();
         assert_eq!(sender.so_lan.get(), 0);
     }
@@ -610,7 +748,7 @@ mod tests {
         };
         let lc = LauncherKhongDuocGoi;
         let fired = Cell::new(false);
-        let core = HotkeyCore::new(&sender, &lc, &st, ms(200), ms(1), &fired);
+        let core = HotkeyCore::new(&sender, &lc, &st, &KhongKhoa, ms(200), ms(1), &fired);
         assert!(!core.is_on().unwrap());
     }
 
@@ -625,9 +763,157 @@ mod tests {
         };
         let lc = LauncherKhongDuocGoi;
         let fired = Cell::new(false);
-        let core = HotkeyCore::new(&sender, &lc, &st, ms(1000), ms(1), &fired);
+        let core = HotkeyCore::new(&sender, &lc, &st, &KhongKhoa, ms(1000), ms(1), &fired);
         core.set(false).unwrap();
         assert_eq!(sender.so_lan.get(), 1);
         assert!(!core.is_on().unwrap());
+    }
+
+    // --- Đua giữa HAI TIẾN TRÌNH tongue ------------------------------------
+    //
+    // Cờ `fired` chốt "một chord mỗi lần chạy" chỉ bên trong MỘT tiến trình.
+    // Trên máy thật có hai bên cùng phát `tongue vi` khi rời terminal sang
+    // trình duyệt — Hammerspoon khôi phục theo app, và tongue.nvim trả bộ gõ
+    // lúc nvim mất focus. Đo được 495ms giữa hai lần spawn; rơi vào trong cửa
+    // sổ 87–286ms mà GoNhanh chưa kịp ghi `gonhanh.enabled` thì cả hai đọc
+    // "đang tắt", mỗi bên bắn một chord, GoNhanh bật rồi tắt, cả hai
+    // VerifyFailed.
+
+    /// GoNhanh dùng chung giữa nhiều luồng. Mỗi chord xếp một cú LẬT ăn sau
+    /// `tre` — lật chứ không phải gán, vì chord là toggle: hai cú thì về chỗ cũ.
+    struct GoNhanhChung {
+        inner: Mutex<TrangThai>,
+        so_chord: AtomicU32,
+        tre: Duration,
+    }
+    struct TrangThai {
+        enabled: bool,
+        cho_lat: Vec<Instant>,
+    }
+    impl GoNhanhChung {
+        fn new(enabled: bool, tre: Duration) -> Self {
+            Self {
+                inner: Mutex::new(TrangThai {
+                    enabled,
+                    cho_lat: Vec::new(),
+                }),
+                so_chord: AtomicU32::new(0),
+                tre,
+            }
+        }
+        /// Đọc bit, áp trước mọi cú lật đã tới hạn.
+        fn doc(&self) -> bool {
+            let mut g = self.inner.lock().unwrap();
+            let now = Instant::now();
+            let mut i = 0;
+            while i < g.cho_lat.len() {
+                if now >= g.cho_lat[i] {
+                    g.cho_lat.remove(i);
+                    g.enabled = !g.enabled;
+                } else {
+                    i += 1;
+                }
+            }
+            g.enabled
+        }
+        fn nhan_chord(&self) {
+            self.so_chord.fetch_add(1, Ordering::SeqCst);
+            let han = Instant::now() + self.tre;
+            self.inner.lock().unwrap().cho_lat.push(han);
+        }
+    }
+    impl StateSource for GoNhanhChung {
+        fn running(&self) -> Result<bool> {
+            Ok(true)
+        }
+        fn enabled(&self) -> Result<Option<bool>> {
+            Ok(Some(self.doc()))
+        }
+    }
+
+    struct SenderChung<'a> {
+        app: &'a GoNhanhChung,
+    }
+    impl ChordSender for SenderChung<'_> {
+        fn send(&self) -> Result<()> {
+            self.app.nhan_chord();
+            Ok(())
+        }
+    }
+
+    fn thu_muc_tam(ten: &str) -> std::path::PathBuf {
+        let d = std::env::temp_dir().join(format!("tongue-test-{}-{}", ten, std::process::id()));
+        let _ = std::fs::remove_dir_all(&d);
+        std::fs::create_dir_all(&d).unwrap();
+        d
+    }
+
+    /// HỒI QUY CHO LỖI ĐÃ ĐO NGOÀI ĐỜI: hai lần chạy tongue chồng nhau, mỗi lần
+    /// có cờ `fired` riêng, nhưng TỔNG CỘNG chỉ được một chord.
+    #[test]
+    fn hai_lan_chay_chong_nhau_chi_ban_mot_chord() {
+        let dir = thu_muc_tam("dua");
+        let khoa = dir.join("switch.lock");
+        let app = GoNhanhChung::new(false, ms(150));
+        let cong = Barrier::new(2);
+
+        std::thread::scope(|s| {
+            for _ in 0..2 {
+                s.spawn(|| {
+                    let sender = SenderChung { app: &app };
+                    let lc = LauncherKhongDuocGoi;
+                    let gate = FileGate::new(&khoa, ms(3000)).unwrap();
+                    let fired = Cell::new(false);
+                    let core = HotkeyCore::new(&sender, &lc, &app, &gate, ms(1000), ms(5), &fired);
+                    cong.wait();
+                    core.set(true).unwrap();
+                });
+            }
+        });
+
+        assert_eq!(
+            app.so_chord.load(Ordering::SeqCst),
+            1,
+            "hai lần chạy chồng nhau chỉ được bắn TỔNG CỘNG một chord"
+        );
+        assert!(app.doc(), "phải kết thúc ở trạng thái bật");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Bên kia giữ khoá quá ngân sách: KHÔNG được bắn chord — bắn lúc này là
+    /// tái lập đúng lỗi vừa chặn. Và phải trả về chứ không treo, để reconcile
+    /// vẫn là chỗ duy nhất quyết định VerifyFailed.
+    #[test]
+    fn khoa_bi_giu_qua_han_thi_khong_ban_chord() {
+        let dir = thu_muc_tam("qua-han");
+        let khoa = dir.join("switch.lock");
+
+        let ben_kia = FileGate::new(&khoa, ms(1000)).unwrap();
+        let _cam = ben_kia
+            .enter()
+            .unwrap()
+            .expect("lần đầu phải giành được khoá");
+
+        let st = FakeState::new(true, false);
+        let sender = SenderTruot {
+            so_lan: Cell::new(0),
+        };
+        let lc = LauncherKhongDuocGoi;
+        let gate = FileGate::new(&khoa, ms(60)).unwrap();
+        let fired = Cell::new(false);
+        let core = HotkeyCore::new(&sender, &lc, &st, &gate, ms(1000), ms(1), &fired);
+
+        let t0 = Instant::now();
+        core.set(true).unwrap();
+        let mat = t0.elapsed();
+
+        assert_eq!(
+            sender.so_lan.get(),
+            0,
+            "không giành được khoá thì không được bắn chord"
+        );
+        assert!(mat >= ms(60), "phải chờ hết ngân sách, mất {mat:?}");
+        assert!(mat < ms(600), "không được treo, mất {mat:?}");
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

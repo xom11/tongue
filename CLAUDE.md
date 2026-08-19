@@ -16,7 +16,7 @@ Exit code: `0` = đích đã verify khớp · `1` = verify trượt (`VerifyFail
 ## Lệnh kiểm tra — chạy đủ TRƯỚC khi push
 
 ```bash
-cargo test                                                    # 69 unit test + 2 smoke ignored
+cargo test                                                    # 71 unit test + 2 smoke ignored
 cargo fmt --check
 cargo clippy --all-targets -- -D warnings                     # macOS
 cargo clippy --all-targets --target x86_64-pc-windows-msvc -- -D warnings   # BẮT BUỘC
@@ -104,6 +104,30 @@ nhận rồi mới trả về, và bắn TỐI ĐA MỘT chord mỗi lần chạ
 `set()` mỗi vòng poll 50ms, mà GoNhanh mất 87–286ms (đo 4 lần, 30/07/2026) mới
 ghi `gonhanh.enabled`. Trả về sớm là bắn trùng 2–6 chord và lật mode qua lại;
 bỏ chốt "một chord" là cú thứ hai lật ngược cú đầu ăn chậm.
+
+**Chốt "một chord" chỉ bịt được MỘT tiến trình — cửa sổ 87–286ms còn hở cho
+tiến trình thứ hai, nên `set()` của strategy `hotkey` phải chạy trong khoá liên
+tiến trình (`Gate`), và lần đọc trạng thái quyết định có bắn hay không phải nằm
+TRONG khoá.** Cờ `fired` là một `Cell`, nó không biết gì về tiến trình khác.
+Trên máy chủ repo có hai bên độc lập cùng phát `tongue vi` khi rời terminal
+sang trình duyệt: Hammerspoon khôi phục chế độ theo app, và tongue.nvim với
+`restore_on_unfocus`. Đo 19/08/2026: hai lần spawn cách nhau 495ms; khi chúng
+rơi vào trong cửa sổ trên thì cả hai đọc "đang tắt", mỗi bên bắn một chord,
+GoNhanh bật rồi tắt, cả hai thoát 1 kèm `verify trượt sau timeout: bộ gõ ngoài
+muốn bật, thực tế tắt`. A/B trên máy thật: bản cũ 2 tiến trình → cả hai exit 1,
+IME tắt; bản có khoá → 3/3 lượt cả hai exit 0, IME bật.
+
+Khoá là `flock` advisory qua `File::lock` của std trên
+`~/Library/Caches/tongue/switch.lock` — file 0 byte, chỉ mang vai khoá chứ
+KHÔNG giữ trạng thái, nên bất biến "không state file" vẫn nguyên. Kernel nhả
+khoá khi tiến trình chết, nên không có khoá chết. Hết hạn chờ (bằng ngân sách
+verify) thì `set()` trả về mà KHÔNG bắn chord — bắn lúc đó là tái lập đúng lỗi
+vừa chặn; để reconcile đọc lại trạng thái rồi tự quyết định `VerifyFailed`.
+
+Ba chỗ KHÔNG cần khoá này, và lý do phải khác nhau: strategy `process` idempotent
+(`killall`/`open` chạy hai lần vô hại), Windows `WM_VKEY_SET_MODE` cũng idempotent
+và VKey còn có mutex nội bộ chống chạy trùng, còn layout thì `TISSelectInputSource`
+là gán chứ không phải lật. Chỉ chord mới là relay.
 
 **Đọc defaults của GoNhanh trên đường nóng phải qua CFPreferences
 (`macos/prefs.rs`), không shell-out.** Hai lý do độc lập: `defaults read` CẮT
