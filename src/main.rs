@@ -96,7 +96,19 @@ fn maybe_forward() -> Option<std::process::ExitCode> {
         let _ = std::process::Command::new("schtasks")
             .args(["/run", "/tn", &task])
             .output();
-        bridge = pipe::forward(&args, budget);
+        // `schtasks /run` trả về NGAY, còn agent thì chưa dựng xong pipe: bước nhảy
+        // session tốn 376-401 ms (đo 5/5 trên a14) rồi tongue.exe còn phải khởi động
+        // và tạo instance. Thử lại đúng MỘT lần là luôn hụt -- đo được: lần gọi đầu
+        // báo Absent trong khi agent lên thật ngay sau đó, nên người dùng thấy lỗi
+        // "chưa có agent" ở đúng lần đã khởi động thành công nó.
+        let until = std::time::Instant::now() + std::time::Duration::from_secs(3);
+        loop {
+            bridge = pipe::forward(&args, budget);
+            if !matches!(bridge, Ok(Bridge::Absent)) || std::time::Instant::now() >= until {
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(120));
+        }
     }
 
     match bridge {

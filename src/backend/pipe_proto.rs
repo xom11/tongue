@@ -54,7 +54,14 @@ pub fn session_of(entry: &str, sid: &str) -> Option<u32> {
 pub const FORWARDABLE: &[&str] = &["vi", "en", "zh", "status", "doctor"];
 
 pub fn forwardable(args: &[String]) -> bool {
-    matches!(args.first(), Some(a) if FORWARDABLE.contains(&a.as_str()))
+    match args.first() {
+        // `tongue` trần là lệnh ĐỌC, và nó là lệnh được gọi nhiều nhất -- preset
+        // `tongue` của tongue.nvim dùng đúng dạng này để lấy mode. Bỏ sót nó thì cầu
+        // trông như chạy (`tongue vi` qua được) trong khi vế đọc thì không, và triệu
+        // chứng là "set được mà không đọc được" -- rất khó lần ra.
+        None => true,
+        Some(a) => FORWARDABLE.contains(&a.as_str()),
+    }
 }
 
 /// Khung: `<u32 le độ dài><bytes>`. Byte-mode pipe + tiền tố độ dài, CỐ Ý không dùng
@@ -146,13 +153,22 @@ mod tests {
     }
 
     #[test]
+    fn lenh_doc_tran_cung_duoc_chuyen_tiep() {
+        // `tongue` không tham số = đọc mode, và preset `tongue` của tongue.nvim gọi
+        // đúng dạng này. Quên nó thì `set` qua cầu mà `get` thì không.
+        assert!(forwardable(&[]), "lệnh đọc trần phải qua được cầu");
+    }
+
+    #[test]
     fn lenh_that_thi_duoc_chuyen_tiep() {
         for a in ["vi", "en", "zh", "status", "doctor"] {
             assert!(forwardable(&[a.to_string()]), "{a} phải đi được");
         }
         assert!(forwardable(&["status".into(), "--json".into()]));
-        assert!(!forwardable(&[]));
         assert!(!forwardable(&["khong-co-lenh-nay".into()]));
+        // Lệnh trần thì CÓ đi được -- xem `lenh_doc_tran_cung_duoc_chuyen_tiep`.
+        // Dòng này từng khẳng định ngược lại, và nó sai: `tongue` không tham số là
+        // lệnh ĐỌC, không phải lệnh meta như `--version`.
     }
 
     #[test]
