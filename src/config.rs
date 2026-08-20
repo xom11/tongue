@@ -68,6 +68,29 @@ pub struct WindowsConfig {
     pub source_vi: String,
     pub source_en: String,
     pub source_zh: String,
+    /// Ten scheduled task chay `tongue agent` trong session tuong tac. Client o
+    /// session 0 goi `schtasks /run /tn <day>` khi khong thay agent nao.
+    ///
+    /// La CONFIG chu khong phai hang so vi task nay do lop tich hop (`~/.nix`,
+    /// `windows/modules/services/`) tao ra, khong phai do tongue. Hardcode ten no la
+    /// bat cong cu phu thuoc nguoc vao mot repo ma no vua duoc tach ra khoi.
+    pub agent_task: String,
+    /// Ngan sach cho agent tra loi, mili giay.
+    ///
+    /// San phai LON HON ca xau nhat cua agent, va ca xau nhat khong phai ~1s ma ~6s:
+    /// `ensure_running` cho VKey cold-start toi 5000ms roi `reconcile` con an them
+    /// `verify.timeout_ms` (mac dinh 1000), cong thoi gian dung tien trinh con va mot
+    /// luot `schtasks /run` (376-401ms, do 5/5 tren a14). Dat 2000 nhu phan xa tu nhien
+    /// la bao THAT BAI cho mot lan chuyen dang thanh cong bon giay sau do — va moi cache
+    /// ma nguoi goi giu deu thanh sai.
+    pub agent_timeout_ms: u64,
+    /// Agent tu thoat sau ngan nay mili giay ranh.
+    ///
+    /// Khong co watchdog: client tu hoi sinh agent bang `schtasks /run`, nen "da chet"
+    /// khong phai mot trang thai can ai canh. Doi lai phai co duong thoat nay — no cung
+    /// la thu nha khoa file tren `tongue.exe` (Windows khong cho ghi de .exe dang chay),
+    /// ma kenh cai dat tren a14 la chep tay.
+    pub agent_idle_ms: u64,
 }
 
 impl Default for WindowsConfig {
@@ -77,6 +100,9 @@ impl Default for WindowsConfig {
             source_vi: "0409".into(),
             source_en: "0409".into(),
             source_zh: "0804".into(),
+            agent_task: r"\TongueAgent".into(),
+            agent_timeout_ms: 15_000,
+            agent_idle_ms: 600_000,
         }
     }
 }
@@ -151,6 +177,7 @@ mod tests {
         assert_eq!(c.macos.source_zh, "com.apple.inputmethod.SCIM.ITABC");
         assert_eq!(c.macos.app_name, "GoNhanh");
         assert_eq!(c.windows.vkey_path, "");
+        assert_eq!(c.windows.agent_task, r"\TongueAgent");
         assert_eq!(c.verify.timeout_ms, 1000);
         assert_eq!(c.verify.poll_ms, 50);
     }
@@ -188,6 +215,22 @@ mod tests {
     #[test]
     fn toml_hong_thi_bao_loi() {
         assert!(parse("[macos\nstrategy=").is_err());
+    }
+
+    /// San cua ngan sach cho agent phai lon hon ca xau nhat cua no: 5000ms cold-start
+    /// VKey + verify.timeout_ms. Ha xuong duoi la bao that bai cho mot lan chuyen dang
+    /// thanh cong.
+    #[test]
+    fn ngan_sach_agent_lon_hon_ca_xau_nhat() {
+        let c = Config::default();
+        assert!(c.windows.agent_timeout_ms > 5_000 + c.verify.timeout_ms);
+    }
+
+    #[test]
+    fn khai_agent_task_rieng() {
+        let c = parse("[windows]\nagent_task = \"\\\\Tongue\"\n").unwrap();
+        assert_eq!(c.windows.agent_task, r"\Tongue");
+        assert_eq!(c.windows.agent_timeout_ms, 15_000);
     }
 
     #[test]

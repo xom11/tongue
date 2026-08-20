@@ -126,6 +126,11 @@ thoát {app} rồi mở lại, hoặc đổi sang strategy \"hotkey\"",
 // Windows không có layout để khám (US cố định) nên toàn bộ phần khám nằm trong
 // VkeyIme::diagnose — đối xứng với macOS, và doctor không cần biết VKey là gì.
 #[cfg(windows)]
-pub fn run(fix: bool, _cfg: &Config, ime: &dyn crate::backend::Ime) -> Result<bool> {
-    Ok(print_findings(&ime.diagnose(fix)?))
+pub fn run(fix: bool, cfg: &Config, ime: &dyn crate::backend::Ime) -> Result<bool> {
+    // Cầu qua session là trạng thái hỏng MỚI mà máy này chưa từng có, nên nó phải nhìn
+    // thấy được — và phải đứng TRƯỚC phần khám VKey, vì khi nó hỏng thì mọi dòng phía
+    // sau đang nói về sai session.
+    let mut fs = crate::backend::windows::pipe::diagnose_bridge(&cfg.windows.agent_task);
+    fs.extend(ime.diagnose(fix)?);
+    Ok(print_findings(&fs))
 }

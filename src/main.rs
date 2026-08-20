@@ -51,36 +51,80 @@ enum Cmd {
 /// session của người dùng thì chuyển tiếp cả lượt chạy sang đó và tái hiện y nguyên
 /// mã thoát cùng hai luồng ra — người gọi không phân biệt được với chạy tại chỗ.
 ///
-/// `None` = không chuyển tiếp, cứ chạy như thường (và rồi báo lỗi session 0 như cũ,
-/// vì đó vẫn là sự thật khi không có agent).
+/// **STDOUT phải là stdout của agent, không thêm một byte.** Bên tiêu thụ ràng buộc
+/// chặt hơn người ta tưởng: `sanitize` của tongue.nvim loại thẳng output có khoảng
+/// trắng bên trong, và `set_async` coi BẤT KỲ stdout nào trên một lần set là thất bại.
+/// Mọi thứ client tự nói — định tuyến, phiên bản, chẩn đoán transport — đi ra STDERR.
+///
+/// `None` = không chuyển tiếp, cứ chạy như thường.
 #[cfg(windows)]
 fn maybe_forward() -> Option<std::process::ExitCode> {
+    use backend::pipe_proto as proto;
+    use backend::windows::pipe::{self, Bridge};
     use std::io::Write;
-    if std::env::var_os(backend::windows::pipe::NO_FORWARD_ENV).is_some() {
+    use std::process::ExitCode;
+
+    if std::env::var_os(pipe::NO_FORWARD_ENV).is_some() {
         return None;
     }
+    // Đường CỤC BỘ không bao giờ đi qua pipe. `switch-language.ahk` trên a14 gọi tongue
+    // mỗi lần đổi cửa sổ và nó ở session 1; cho nó đi qua agent là biến một công cụ hôm
+    // nay không có single point of failure thành một công cụ có.
     if !backend::windows::in_service_session() {
         return None;
     }
     let args: Vec<String> = std::env::args().skip(1).collect();
-    // `agent` không bao giờ được chuyển tiếp: nó LÀ đầu kia.
-    if args.first().map(String::as_str) == Some("agent") {
+    // `agent` vắng mặt khỏi danh sách (nó LÀ đầu kia), `--version`/`--help` cũng vậy —
+    // chúng phải nói về binary vừa gọi, vì đó chính là thứ cần khi gỡ ca lệch phiên bản.
+    if !proto::forwardable(&args) {
         return None;
     }
-    // Phân biệt "không có agent" với "có agent mà đường truyền hỏng". Nuốt vế thứ
-    // hai thành vế thứ nhất là đúng kiểu lỗi câm: người dùng nhận lời khuyên đi dựng
-    // agent, trong khi agent đang chạy và thứ hỏng nằm chỗ khác.
-    let reply = match backend::windows::pipe::forward(&args) {
-        Ok(Some(r)) => r,
-        Ok(None) => return None,
-        Err(e) => {
-            eprintln!("tongue: agent có mặt nhưng trao đổi thất bại: {e:#}");
-            return Some(std::process::ExitCode::from(2));
+    // Config hỏng không được chặn `--help`, nên nuốt lỗi ở đây là cố ý; run() sẽ đọc
+    // lại và báo tử tế.
+    let cfg = config::load().unwrap_or_default();
+    let task = cfg.windows.agent_task.clone();
+    let budget = std::time::Duration::from_millis(cfg.windows.agent_timeout_ms);
+
+    let mut bridge = pipe::forward(&args, budget);
+    // Không tự ĐĂNG KÝ task (bán kính ảnh hưởng lớn hơn hẳn "đổi chế độ gõ"), chỉ CHẠY
+    // một task đã tồn tại. Client ở session 0 vốn không spawn được vào session 1 — đó là
+    // cả tiền đề của việc này — nên Task Scheduler là cửa duy nhất.
+    if matches!(bridge, Ok(Bridge::Absent)) && !task.is_empty() {
+        // `schtasks` là tiến trình ngắn và `.output()` cấp cho nó pipe riêng; tiến trình
+        // task thì do Task Scheduler sinh ra chứ không phải do ta, nên không thừa kế gì
+        // của ta. Đây là lý do chỗ này KHÔNG cần `spawn_no_inherit` như vkey.rs.
+        let _ = std::process::Command::new("schtasks")
+            .args(["/run", "/tn", &task])
+            .output();
+        bridge = pipe::forward(&args, budget);
+    }
+
+    match bridge {
+        Ok(Bridge::Reply(r)) => {
+            let _ = std::io::stdout().write_all(&r.stdout);
+            let _ = std::io::stderr().write_all(&r.stderr);
+            Some(ExitCode::from(r.code))
         }
-    };
-    let _ = std::io::stdout().write_all(&reply.stdout);
-    let _ = std::io::stderr().write_all(&reply.stderr);
-    Some(std::process::ExitCode::from(reply.code))
+        Ok(Bridge::Absent) => {
+            eprintln!("tongue: {}", pipe::service_session_hint(&task));
+            Some(ExitCode::from(2))
+        }
+        Ok(Bridge::Ambiguous(sessions)) => {
+            eprintln!(
+                "tongue: có nhiều agent cùng lúc (session {sessions:?}) — KHÔNG tự chọn, \
+                 vì lái nhầm session nghĩa là đổi bộ gõ của một desktop khác. Dừng bớt đi."
+            );
+            Some(ExitCode::from(2))
+        }
+        // "Có agent nhưng không tới được" KHÁC HẲN "chưa có agent": rơi xuống đường cũ
+        // ở đây là in ra một lời khuyên sai (đi dựng scheduled task) cho một agent đang
+        // treo, và tệ hơn — nó hồi sinh đúng cái bug session 0 mà cả module này sinh ra
+        // để chặn (read_state thấy rỗng -> spawn một VKey THỨ HAI trong session 0).
+        Err(e) => {
+            eprintln!("tongue: cầu tới agent hỏng: {e:#}");
+            Some(ExitCode::from(2))
+        }
+    }
 }
 
 fn main() -> std::process::ExitCode {
@@ -123,7 +167,9 @@ fn run() -> anyhow::Result<()> {
             Ok(())
         }
         #[cfg(windows)]
-        Some(Cmd::Agent) => backend::windows::pipe::serve(),
+        Some(Cmd::Agent) => backend::windows::pipe::serve(std::time::Duration::from_millis(
+            cfg.windows.agent_idle_ms,
+        )),
         Some(Cmd::Doctor { fix }) => {
             if doctor::run(fix, &cfg, make_ime(&cfg)?.as_ref())? {
                 std::process::exit(2);
@@ -235,17 +281,41 @@ fn snapshot(cfg: &config::Config) -> anyhow::Result<status::Snapshot> {
     })
 }
 
+/// `status` là CHẨN ĐOÁN, không phải một đích cần verify — nên thiếu cửa sổ foreground
+/// KHÔNG được làm nó chết.
+///
+/// Trên Windows input locale là thuộc tính CỦA THREAD, nên "không có foreground" nghĩa
+/// là không có thread nào để hỏi; đó là sự thật về cái máy, không phải lỗi của tongue.
+/// Mà ca đó xảy ra đúng lúc người ta hay ssh vào nhất (máy khoá, hoặc không app nào
+/// focus), nên bail ở đây là làm hỏng lệnh ngay tại ca dùng chính.
+///
+/// Session 0 vẫn báo lỗi như cũ: `make_ime(..).is_on()` chạy TRƯỚC và `read_state()` đã
+/// bail ở đó, nên nhánh degrade này chỉ ăn đúng ca "thiếu foreground".
 #[cfg(windows)]
 fn snapshot(cfg: &config::Config) -> anyhow::Result<status::Snapshot> {
-    let layout = backend::windows::layout::current_langid()?;
     let ime_on = make_ime(cfg)?.is_on()?;
-    let (mode, drift) = status::infer_win(ime_on, &layout, &cfg.windows.sources());
-    Ok(status::Snapshot {
-        mode,
-        layout: Some(layout),
-        ime_on,
-        drift,
-    })
+    match backend::windows::layout::current_langid() {
+        Ok(layout) => {
+            let (mode, drift) = status::infer_win(ime_on, &layout, &cfg.windows.sources());
+            Ok(status::Snapshot {
+                mode,
+                layout: Some(layout),
+                ime_on,
+                drift,
+            })
+        }
+        Err(e) => Ok(status::Snapshot {
+            // Bit VKey một mình phân biệt được vi với en (source_vi trùng source_en),
+            // nhưng KHÔNG loại trừ được zh — nên sự thiếu chắc chắn đó phải nằm trong
+            // `drift`, không được im.
+            mode: if ime_on { "vi" } else { "en" }.into(),
+            layout: None,
+            ime_on,
+            drift: Some(format!(
+                "không đọc được layout ({e:#}) — mode suy từ bit VKey, chưa loại trừ được zh"
+            )),
+        }),
+    }
 }
 
 // Chỉ chạy trên macOS: make_ime bản Windows bỏ qua cfg.macos hoàn toàn nên

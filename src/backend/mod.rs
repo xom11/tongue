@@ -12,6 +12,12 @@ pub mod vkey_shm;
 #[allow(dead_code)]
 pub mod hkl;
 
+// Cùng lý do như vkey_shm và hkl, và ở đây lý do đó nặng hơn: khung tin + tên pipe là
+// mảnh DUY NHẤT của đường session-0 mà CI kiểm được trên cả hai runner. Call site thật
+// chỉ có trong windows/pipe.rs và main.rs dưới cfg(windows).
+#[allow(dead_code)]
+pub mod pipe_proto;
+
 pub trait Layout {
     fn current(&self) -> anyhow::Result<String>;
     fn select(&self, id: &str) -> anyhow::Result<()>;

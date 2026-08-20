@@ -193,40 +193,6 @@ khi nhận lệnh nhưng chưa đổi ngay, nên retry chính là cách xử lý
 Thời gian thực đo trên macOS: ~50ms khi trạng thái đã đúng sẵn (thoát ngay vòng
 đầu), ~90ms với `backend = "system"`, ~150–240ms khi phải bật/tắt process thật.
 
-## Chạy qua SSH trên Windows: `tongue agent`
-
-SSH của Windows chạy như một service, nên shell nó sinh ra nằm ở **session 0**.
-Hai cơ chế tongue dùng để lái VKey đều là tài nguyên **theo session**: window
-station (`FindWindow`) và namespace `Local\` (`OpenFileMapping`). Nên
-`ssh may tongue vi` vốn từ chối thẳng — nó gọi đúng tên nhưng ra nhầm đối tượng.
-
-`\\.\pipe\` thì **không** theo session: đó là namespace duy nhất cho cả máy, và
-là cơ chế Microsoft dựng cho đúng việc "service nói chuyện với app desktop". Nên
-cho một `tongue agent` chạy sẵn trong session của người dùng, và mọi lần gọi từ
-session 0 tự chuyển tiếp vào đó — không đổi lệnh, không thêm cờ.
-
-```powershell
-$sid = ([Security.Principal.WindowsIdentity]::GetCurrent()).User.Value
-Register-ScheduledTask -TaskName TongueAgent -Force `
-  -Action    (New-ScheduledTaskAction -Execute "$env:USERPROFILE\.local\bin\tongue.exe" -Argument agent) `
-  -Trigger   (New-ScheduledTaskTrigger -AtLogon) `
-  -Principal (New-ScheduledTaskPrincipal -UserId $sid -LogonType Interactive -RunLevel Limited) `
-  -Settings  (New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries `
-                -StartWhenAvailable -MultipleInstances Parallel -ExecutionTimeLimit 0)
-```
-
-Hai cờ bắt buộc, cả hai hỏng **câm** nếu thiếu: `-AllowStartIfOnBatteries` (không
-có thì task ngồi ở `State=Queued` vĩnh viễn với `LastTaskResult=0` trên máy chạy
-pin) và `-MultipleInstances Parallel` (mặc định `IgnoreNew` âm thầm bỏ lệnh start
-chồng lên instance đang chạy).
-
-Không có agent thì hành vi **y như cũ**: báo lỗi session 0 kèm hướng dẫn. Đó là
-chủ đích — im lặng coi như thành công mới là thứ nguy hiểm.
-
-**Nó không mua tốc độ.** Bước qua pipe gần như miễn phí, nhưng một lượt SSH tới
-máy đó vẫn tốn 452 ms (có ControlMaster) đến 829 ms (không). Thứ nó mua là
-`ssh may tongue vi` **chạy được**, cho script và tự động hoá.
-
 ## Bản đồ mã nguồn
 
 ```
@@ -245,8 +211,8 @@ src/backend/
   vkey_shm.rs      parser bytes shared memory VKey (thuần, test được mọi OS)
 ```
 
-Toàn bộ phần quyết định là code thuần và có test chạy trên mọi OS; chỉ bốn file
-`tis.rs`, `gonhanh.rs`/`app.rs`, `vkey.rs`, `pipe.rs` là thật sự chạm hệ thống.
+Toàn bộ phần quyết định là code thuần và có test chạy trên mọi OS; chỉ ba file
+`tis.rs`, `gonhanh.rs`/`app.rs`, `vkey.rs` là thật sự chạm hệ thống.
 
 **Thêm bộ gõ mới:** nếu nó chỉ cần bật/tắt bằng process thì không cần code —
 dùng `backend = "app"`. Nếu nó có kênh điều khiển riêng thì thêm một file trong
@@ -276,12 +242,8 @@ thúc bằng `tongue vi` để khôi phục.
 
 ## Ngoài phạm vi hiện tại
 
-Auto-switch theo app đang focus, Linux, và strategy `notify` cho GoNhanh — đã
-ghi trong spec, chưa làm.
-
-`tongue agent` **không** phải cái daemon trong danh sách đó: nó không tự quyết
-định gì, không nghe phím, không chạy theo lịch. Nó chỉ là đầu kia của một cây
-cầu, và chỉ tồn tại vì Windows chia namespace theo session.
+Auto-switch theo app đang focus, daemon/hotkey tích hợp sẵn, Linux, và strategy
+`notify` cho GoNhanh — đã ghi trong spec, chưa làm.
 
 Chi tiết thiết kế kèm bằng chứng `file:line` từ source của cả hai bộ gõ:
 `docs/superpowers/specs/2026-07-29-tongue-design.md`. Quy ước cho người sửa code

@@ -45,4 +45,12 @@ windows-sys = { version = "0.59", features = [
     # Win32::Storage::FileSystem", khong he nhac toi IO. Cung mot cai bay nhu
     # CreateProcessW can Win32_Security o tren.
     "Win32_System_IO",
+    # ConvertStringSecurityDescriptorToSecurityDescriptorW + ConvertSidToStringSidW:
+    # DACL tường minh cho pipe, và tên pipe theo SID. Đây là feature DUY NHẤT phải thêm
+    # cho cả cầu named pipe — GetTokenInformation/TOKEN_USER/SECURITY_ATTRIBUTES đã có
+    # trong Win32_Security, OpenProcessToken/OpenProcess trong Win32_System_Threading,
+    # WTSGetActiveConsoleSessionId trong Win32_System_RemoteDesktop, còn LocalFree thì
+    # nằm ở Win32_Foundation. Cùng cái bẫy như CreateProcessW ở trên: tên feature không
+    # suy ra được từ thông báo lỗi.
+    "Win32_Security_Authorization",
 ] }
