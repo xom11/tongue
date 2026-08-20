@@ -31,14 +31,33 @@ pub fn print_findings(fs: &[Finding]) -> bool {
     failed
 }
 
+/// Khoá lạ trong config.toml. Đứng riêng vì cả hai nền tảng đều cần, và vì đây là
+/// đúng chỗ để báo: `doctor` là thứ người ta chạy khi "tôi đặt rồi mà không ăn".
+fn config_findings(cfg: &Config) -> Vec<Finding> {
+    let unknown = cfg.unknown_keys();
+    if unknown.is_empty() {
+        return Vec::new();
+    }
+    vec![Finding {
+        level: Level::Warn,
+        msg: format!(
+            "config.toml có khoá không nhận ra: {} — chúng bị BỎ QUA im lặng, giá trị đang \
+             dùng là mặc định. Kiểm lại chính tả (ví dụ `agent_idle_ms`, không phải \
+             `idle_exit_ms`).",
+            unknown.join(", ")
+        ),
+    }]
+}
+
 #[cfg(target_os = "macos")]
 pub fn run(fix: bool, cfg: &Config, ime: &dyn crate::backend::Ime) -> Result<bool> {
     use crate::backend::macos::{app, prefs, tis};
 
-    let mut fs = vec![Finding {
+    let mut fs = config_findings(cfg);
+    fs.push(Finding {
         level: Level::Ok,
         msg: format!("backend = {}", cfg.macos.backend),
-    }];
+    });
 
     // 1. phần khám riêng của bộ gõ đang chọn — doctor không cần biết đó là ai
     fs.extend(ime.diagnose(fix)?);
@@ -130,7 +149,10 @@ pub fn run(fix: bool, cfg: &Config, ime: &dyn crate::backend::Ime) -> Result<boo
     // Cầu qua session là trạng thái hỏng MỚI mà máy này chưa từng có, nên nó phải nhìn
     // thấy được — và phải đứng TRƯỚC phần khám VKey, vì khi nó hỏng thì mọi dòng phía
     // sau đang nói về sai session.
-    let mut fs = crate::backend::windows::pipe::diagnose_bridge(&cfg.windows.agent_task);
+    let mut fs = config_findings(cfg);
+    fs.extend(crate::backend::windows::pipe::diagnose_bridge(
+        &cfg.windows.agent_task,
+    ));
     fs.extend(ime.diagnose(fix)?);
     Ok(print_findings(&fs))
 }

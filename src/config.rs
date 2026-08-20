@@ -2,7 +2,19 @@
 
 use anyhow::Context;
 use serde::Deserialize;
+use std::collections::BTreeMap;
 use std::path::PathBuf;
+
+/// Khoá không khớp trường nào. `serde(default)` một mình NUỐT IM LẶNG chúng: gõ nhầm
+/// `idle_exit_ms` thay vì `agent_idle_ms` thì tool chạy với mặc định và không nói gì,
+/// nên người dùng tin là mình đã đổi. Chính README của repo này từng dạy sai đúng tên
+/// khoá đó.
+///
+/// Bắt ở đây rồi để `doctor` báo, CHỨ KHÔNG `deny_unknown_fields`: kênh cài đặt trên
+/// Windows là chép tay, nên "binary cũ + config mới" là trạng thái bình thường chứ
+/// không phải ngoại lệ. Lỗi cứng ở đó nghĩa là không đổi nổi chế độ gõ, chỉ vì một
+/// khoá của phiên bản sau. `BTreeMap` để thứ tự in ra ổn định.
+type Unknown = BTreeMap<String, toml::Value>;
 
 #[derive(Debug, Default, Deserialize, PartialEq)]
 #[serde(default)]
@@ -10,6 +22,8 @@ pub struct Config {
     pub macos: MacosConfig,
     pub windows: WindowsConfig,
     pub verify: VerifyConfig,
+    #[serde(flatten)]
+    pub unknown: Unknown,
 }
 
 #[derive(Debug, Deserialize, PartialEq)]
@@ -26,6 +40,8 @@ pub struct MacosConfig {
     pub source_en: String,
     pub source_zh: String,
     pub app_name: String,
+    #[serde(flatten)]
+    pub unknown: Unknown,
 }
 
 impl Default for MacosConfig {
@@ -37,6 +53,7 @@ impl Default for MacosConfig {
             source_en: "com.apple.keylayout.ABC".into(),
             source_zh: "com.apple.inputmethod.SCIM.ITABC".into(),
             app_name: "GoNhanh".into(),
+            unknown: Unknown::new(),
         }
     }
 }
@@ -91,6 +108,8 @@ pub struct WindowsConfig {
     /// la thu nha khoa file tren `tongue.exe` (Windows khong cho ghi de .exe dang chay),
     /// ma kenh cai dat tren a14 la chep tay.
     pub agent_idle_ms: u64,
+    #[serde(flatten)]
+    pub unknown: Unknown,
 }
 
 impl Default for WindowsConfig {
@@ -103,6 +122,7 @@ impl Default for WindowsConfig {
             agent_task: r"\TongueAgent".into(),
             agent_timeout_ms: 15_000,
             agent_idle_ms: 600_000,
+            unknown: Unknown::new(),
         }
     }
 }
@@ -125,6 +145,8 @@ impl WindowsConfig {
 pub struct VerifyConfig {
     pub timeout_ms: u64,
     pub poll_ms: u64,
+    #[serde(flatten)]
+    pub unknown: Unknown,
 }
 
 impl Default for VerifyConfig {
@@ -132,7 +154,23 @@ impl Default for VerifyConfig {
         Self {
             timeout_ms: 1000,
             poll_ms: 50,
+            unknown: Unknown::new(),
         }
+    }
+}
+
+impl Config {
+    /// Mọi khoá lạ, có tiền tố mục, thứ tự ổn định. Rỗng = config sạch.
+    pub fn unknown_keys(&self) -> Vec<String> {
+        let mut out: Vec<String> = self.unknown.keys().cloned().collect();
+        for (sec, m) in [
+            ("macos", &self.macos.unknown),
+            ("windows", &self.windows.unknown),
+            ("verify", &self.verify.unknown),
+        ] {
+            out.extend(m.keys().map(|k| format!("{sec}.{k}")));
+        }
+        out
     }
 }
 
@@ -167,6 +205,35 @@ pub fn load() -> anyhow::Result<Config> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Khoa go nham bi NUOT im lang -- day la con bug that: README cua repo nay tung
+    /// day `idle_exit_ms` trong khi truong that la `agent_idle_ms`, va ai chep nguyen
+    /// khoi TOML do se thay agent giu mac dinh 600 s ma khong mot loi bao.
+    #[test]
+    fn khoa_go_nham_van_bi_nuot_nhung_doctor_thay_duoc() {
+        let c = parse("[windows]\nidle_exit_ms = 1234\n").unwrap();
+        assert_eq!(
+            c.windows.agent_idle_ms, 600_000,
+            "van la mac dinh -- khong bao loi"
+        );
+        assert_eq!(c.unknown_keys(), vec!["windows.idle_exit_ms"]);
+    }
+
+    #[test]
+    fn config_sach_thi_khong_co_khoa_la() {
+        assert!(parse("").unwrap().unknown_keys().is_empty());
+        let c = parse("[verify]\ntimeout_ms = 3000\n[macos]\nbackend = \"app\"\n").unwrap();
+        assert!(c.unknown_keys().is_empty(), "{:?}", c.unknown_keys());
+    }
+
+    #[test]
+    fn bat_duoc_khoa_la_o_moi_muc_va_ca_cap_cao_nhat() {
+        let c = parse("lac_loai = 1\n[macos]\nbackendd = \"x\"\n[verify]\npoll = 5\n").unwrap();
+        assert_eq!(
+            c.unknown_keys(),
+            vec!["lac_loai", "macos.backendd", "verify.poll"]
+        );
+    }
 
     #[test]
     fn khong_co_gi_thi_ra_default() {
