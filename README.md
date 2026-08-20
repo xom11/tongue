@@ -193,6 +193,55 @@ khi nhận lệnh nhưng chưa đổi ngay, nên retry chính là cách xử lý
 Thời gian thực đo trên macOS: ~50ms khi trạng thái đã đúng sẵn (thoát ngay vòng
 đầu), ~90ms với `backend = "system"`, ~150–240ms khi phải bật/tắt process thật.
 
+## Chạy qua SSH trên Windows: `tongue agent`
+
+SSH của Windows chạy như một service, nên shell nó sinh ra nằm ở **session 0**.
+Hai cơ chế tongue dùng để lái VKey đều là tài nguyên **theo session**: window
+station (`FindWindow`) và namespace `Local\` (`OpenFileMapping`, thực chất
+`Session\<n>\`). Nên `ssh may tongue vi` vốn từ chối thẳng — nó gọi đúng tên
+nhưng ra nhầm đối tượng.
+
+`\\.\pipe\` thì **không** theo session: một namespace duy nhất cho cả máy, và là
+cơ chế Microsoft dựng cho đúng việc "service nói chuyện với app desktop". Nên
+`tongue agent` sống trong session của người dùng, còn mọi lần gọi từ session 0
+tự chuyển tiếp vào đó — không đổi lệnh, không thêm cờ.
+
+**Khởi động lười, không phải daemon.** Client ở session 0 tự chạy
+`schtasks /run /tn <agent_task>` khi không thấy pipe, và agent tự thoát sau
+`idle_exit_ms`. Một scheduled task, không watchdog: đây là request/response vài
+lần một ngày do người gõ, không phải thứ phục vụ từng phím bấm. Agent cũng khoá
+cứng `tongue.exe` khi chạy, nên tự thoát là thứ giữ cho việc nâng cấp khỏi vướng.
+
+```toml
+[windows]
+agent_task       = "\\TongueAgent"   # task mà client sẽ gọi khi không thấy pipe
+agent_timeout_ms = 15000            # phải LỚN hơn ca xấu nhất, xem dưới
+idle_exit_ms     = 600000
+```
+
+`agent_timeout_ms` **không** phải 2000 như phản xạ tự nhiên: `ensure_running` chờ
+VKey cold-start tới 5000 ms rồi `reconcile` còn ăn thêm `verify.timeout_ms`. Đặt
+2000 là báo thất bại cho một lần chuyển thành công bốn giây sau đó.
+
+Bảo mật, vì đây là một bề mặt IPC chứ không phải một lời gọi hàm: pipe dựng bằng
+SDDL hẹp `D:P(A;;GA;;;<sid>)` chứ không dùng DACL mặc định, bật
+`PIPE_REJECT_REMOTE_CLIENTS` (named pipe **với tới được qua SMB**),
+`FILE_FLAG_FIRST_PIPE_INSTANCE` để không ai chiếm được tên trước, và phía client
+khai `SECURITY_SQOS_PRESENT|SECURITY_IDENTIFICATION` rồi kiểm SID của server.
+
+Màn hình khoá **không ảnh hưởng**, và đây là đo chứ không suy: khoá ≠ đăng xuất
+nên session vẫn còn, task vẫn chạy, và `GetForegroundWindow()` vẫn trả handle hợp
+lệ dù input desktop lúc đó là `WinSta0\Winlogon`. Đo trên a14: trước khoá handle
+`2622524`, đang khoá `131664` — khác nhau nhưng đều không NULL; `tongue` đọc đúng,
+`layout` vẫn `0409`, `en`/`vi` vẫn đổi thật; qua pipe từ xa 3/3 ở 453-528 ms.
+
+Không có agent thì hành vi **y như cũ**: báo lỗi session 0 kèm hướng dẫn. Đó là
+chủ đích — im lặng coi như thành công mới là thứ nguy hiểm.
+
+**Nó không mua tốc độ.** Bước qua pipe gần như miễn phí, nhưng một lượt SSH tới
+máy đó vẫn tốn 452 ms (có ControlMaster) đến 829 ms (không). Thứ nó mua là
+`ssh may tongue vi` **chạy được**, cho script và tự động hoá.
+
 ## Bản đồ mã nguồn
 
 ```
@@ -211,8 +260,8 @@ src/backend/
   vkey_shm.rs      parser bytes shared memory VKey (thuần, test được mọi OS)
 ```
 
-Toàn bộ phần quyết định là code thuần và có test chạy trên mọi OS; chỉ ba file
-`tis.rs`, `gonhanh.rs`/`app.rs`, `vkey.rs` là thật sự chạm hệ thống.
+Toàn bộ phần quyết định là code thuần và có test chạy trên mọi OS; chỉ bốn file
+`tis.rs`, `gonhanh.rs`/`app.rs`, `vkey.rs`, `pipe.rs` là thật sự chạm hệ thống.
 
 **Thêm bộ gõ mới:** nếu nó chỉ cần bật/tắt bằng process thì không cần code —
 dùng `backend = "app"`. Nếu nó có kênh điều khiển riêng thì thêm một file trong
