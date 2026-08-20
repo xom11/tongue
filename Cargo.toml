@@ -32,4 +32,17 @@ windows-sys = { version = "0.59", features = [
   "Win32_Security",
   # LoadKeyboardLayoutW + GetKeyboardLayout: doi input locale cho mode zh.
   "Win32_UI_Input_KeyboardAndMouse",
+    # Named pipe: cau duy nhat qua ranh gioi session. `\\.\pipe\` la namespace TOAN
+    # MAY, khac han `Local\` (thuc chat `Session\<n>\`) va khac han window station.
+    # Da do tren a14 20/08/2026 voi ACL MAC DINH: server o session 1 tao pipe, client
+    # o session 0 (SSH) mo duoc va trao doi hai chieu. Xem src/backend/windows/pipe.rs.
+    # Pipes cho Create/Connect/Disconnect/WaitNamedPipe; FileSystem cho
+    # CreateFileW/ReadFile/WriteFile tren chinh handle pipe do.
+    "Win32_System_Pipes",
+    "Win32_Storage_FileSystem",
+    # ReadFile/WriteFile/ConnectNamedPipe deu nhan `*mut OVERLAPPED`, ma OVERLAPPED
+    # nam trong Win32_System_IO -- thieu feature nay thi loi la "no `ReadFile` in
+    # Win32::Storage::FileSystem", khong he nhac toi IO. Cung mot cai bay nhu
+    # CreateProcessW can Win32_Security o tren.
+    "Win32_System_IO",
 ] }

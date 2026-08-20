@@ -38,9 +38,56 @@ enum Cmd {
         #[arg(long)]
         fix: bool,
     },
+    /// Nghe named pipe để phục vụ những lần gọi từ session 0 (SSH của Windows).
+    ///
+    /// Phải chạy TRONG session của người dùng — chính nó là cây cầu qua ranh giới
+    /// đó. Xem `src/backend/windows/pipe.rs`.
+    #[cfg(windows)]
+    Agent,
+}
+
+/// Ở session 0 (SSH của Windows) thì mọi thứ tongue cần đều nằm sai phía một bức
+/// tường: window station và `Local\` đều theo session. Nếu có agent đang nghe trong
+/// session của người dùng thì chuyển tiếp cả lượt chạy sang đó và tái hiện y nguyên
+/// mã thoát cùng hai luồng ra — người gọi không phân biệt được với chạy tại chỗ.
+///
+/// `None` = không chuyển tiếp, cứ chạy như thường (và rồi báo lỗi session 0 như cũ,
+/// vì đó vẫn là sự thật khi không có agent).
+#[cfg(windows)]
+fn maybe_forward() -> Option<std::process::ExitCode> {
+    use std::io::Write;
+    if std::env::var_os(backend::windows::pipe::NO_FORWARD_ENV).is_some() {
+        return None;
+    }
+    if !backend::windows::in_service_session() {
+        return None;
+    }
+    let args: Vec<String> = std::env::args().skip(1).collect();
+    // `agent` không bao giờ được chuyển tiếp: nó LÀ đầu kia.
+    if args.first().map(String::as_str) == Some("agent") {
+        return None;
+    }
+    // Phân biệt "không có agent" với "có agent mà đường truyền hỏng". Nuốt vế thứ
+    // hai thành vế thứ nhất là đúng kiểu lỗi câm: người dùng nhận lời khuyên đi dựng
+    // agent, trong khi agent đang chạy và thứ hỏng nằm chỗ khác.
+    let reply = match backend::windows::pipe::forward(&args) {
+        Ok(Some(r)) => r,
+        Ok(None) => return None,
+        Err(e) => {
+            eprintln!("tongue: agent có mặt nhưng trao đổi thất bại: {e:#}");
+            return Some(std::process::ExitCode::from(2));
+        }
+    };
+    let _ = std::io::stdout().write_all(&reply.stdout);
+    let _ = std::io::stderr().write_all(&reply.stderr);
+    Some(std::process::ExitCode::from(reply.code))
 }
 
 fn main() -> std::process::ExitCode {
+    #[cfg(windows)]
+    if let Some(code) = maybe_forward() {
+        return code;
+    }
     match run() {
         Ok(()) => std::process::ExitCode::SUCCESS,
         Err(e) => {
@@ -75,6 +122,8 @@ fn run() -> anyhow::Result<()> {
             );
             Ok(())
         }
+        #[cfg(windows)]
+        Some(Cmd::Agent) => backend::windows::pipe::serve(),
         Some(Cmd::Doctor { fix }) => {
             if doctor::run(fix, &cfg, make_ime(&cfg)?.as_ref())? {
                 std::process::exit(2);
