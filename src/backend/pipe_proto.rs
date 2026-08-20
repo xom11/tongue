@@ -60,6 +60,24 @@ pub fn session_of(entry: &str, sid: &str) -> Option<u32> {
 /// khác: `handle_one` trả lời kèm PID và version của agent TRƯỚC khi chạy tiến trình con.
 pub const FORWARDABLE: &[&str] = &["vi", "en", "zh", "status", "doctor"];
 
+/// Lệnh được phép đi qua CỬA TCP (tunnel ngược), hẹp hơn `FORWARDABLE` một cách cố ý.
+///
+/// `doctor` và `status` vắng mặt: `doctor` in tên pipe — có SID trong đó — và đường
+/// dẫn VKey, còn tunnel chỉ cần đọc và đặt mode. Hai cửa vào khác nhau thì hai bề mặt
+/// khác nhau; gộp chúng lại là cho cửa rộng hơn thừa hưởng thứ nó không cần.
+pub const TCP_VERBS: &[&str] = &["vi", "en", "zh"];
+
+/// Ở đây chứ không phải trong `windows/tcp.rs` vì cùng lý do như `forwardable`: đây là
+/// mảnh kiểm được trên CẢ HAI runner, còn phần còn lại cần một session tương tác thật.
+pub fn tcp_allowed(args: &[String]) -> bool {
+    match args.first() {
+        // Dòng rỗng = `tongue` trần = đọc mode, và đó là lệnh được gọi nhiều nhất. Bỏ
+        // sót nó thì cửa trông như chạy (đặt được) mà vế đọc thì không.
+        None => true,
+        Some(a) => TCP_VERBS.contains(&a.as_str()),
+    }
+}
+
 pub fn forwardable(args: &[String]) -> bool {
     match args.first() {
         // `tongue` trần là lệnh ĐỌC, và nó là lệnh được gọi nhiều nhất -- preset
@@ -141,6 +159,42 @@ pub fn encode_reply(code: u8, stdout: &[u8], stderr: &[u8]) -> Vec<u8> {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn cua_tcp_hep_hon_cua_pipe() {
+        // Bất biến, không phải sở thích: cửa TCP mở ra cho một tunnel mà đầu kia là
+        // một máy khác, nên nó không được thừa hưởng bề mặt của cửa pipe.
+        for v in TCP_VERBS {
+            assert!(FORWARDABLE.contains(v), "{v} phải nằm trong cả hai");
+        }
+        assert!(TCP_VERBS.len() < FORWARDABLE.len(), "TCP phải HẸP hơn");
+        for v in ["doctor", "status"] {
+            assert!(!TCP_VERBS.contains(&v), "{v} không được đi qua tunnel");
+        }
+    }
+
+    #[test]
+    fn tcp_cho_doc_mode_va_ba_lenh_dat() {
+        let a = |s: &str| -> Vec<String> { s.split_whitespace().map(str::to_owned).collect() };
+        // Dòng rỗng = đọc mode. Đây là lệnh được gọi nhiều nhất.
+        assert!(tcp_allowed(&a("")));
+        for v in ["vi", "en", "zh"] {
+            assert!(tcp_allowed(&a(v)), "{v} phải qua được");
+        }
+        for v in ["doctor", "status", "agent", "vi; rm -rf /", "../tongue"] {
+            assert!(!tcp_allowed(&a(v)), "{v} phải bị chặn");
+        }
+    }
+
+    #[test]
+    fn tcp_gac_vi_tri_0_va_chi_vi_tri_0() {
+        // Cùng luật với `forwardable`: argv đi verbatim sau vị trí đầu, nên thêm một
+        // cờ mới không phải bump giao thức.
+        let args: Vec<String> = vec!["vi".into(), "--khong-ton-tai".into()];
+        assert!(tcp_allowed(&args));
+        let args: Vec<String> = vec!["doctor".into(), "vi".into()];
+        assert!(!tcp_allowed(&args));
+    }
+
     use super::*;
 
     #[test]

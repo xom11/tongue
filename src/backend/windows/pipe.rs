@@ -550,10 +550,10 @@ struct SendHandle(HANDLE);
 unsafe impl Send for SendHandle {}
 
 /// Một slot "đang phục vụ", trả lại khi luồng kết thúc — kể cả khi nó panic.
-struct InFlight(Arc<AtomicUsize>);
+pub(crate) struct InFlight(Arc<AtomicUsize>);
 
 impl InFlight {
-    fn new(c: Arc<AtomicUsize>) -> Self {
+    pub(crate) fn new(c: Arc<AtomicUsize>) -> Self {
         c.fetch_add(1, Ordering::SeqCst);
         Self(c)
     }
@@ -628,7 +628,7 @@ fn finish(h: HANDLE) {
     }
 }
 
-type Handler = Arc<dyn Fn(&[String]) -> (u8, Vec<u8>, Vec<u8>) + Send + Sync>;
+pub(crate) type Handler = Arc<dyn Fn(&[String]) -> (u8, Vec<u8>, Vec<u8>) + Send + Sync>;
 
 /// Chạy lại CHÍNH `tongue` như tiến trình con thay vì gọi hàm trong tiến trình. Con nằm
 /// trong session của agent nên nó thấy đúng VKey; và vì nó là một lần chạy tongue bình
@@ -659,7 +659,7 @@ fn run_child(exe: &std::path::Path, args: &[String]) -> (u8, Vec<u8>, Vec<u8>) {
     }
 }
 
-pub fn serve(idle: Duration) -> Result<()> {
+pub fn serve(idle: Duration, listen: Option<std::net::SocketAddr>) -> Result<()> {
     // Giải đường dẫn MỘT lần lúc khởi động, không mỗi request. `current_exe()` trên
     // Windows là chuỗi ghim trong PEB lúc load, nhưng `Command::new` thì mở lại đường
     // dẫn đó ở mỗi lượt — mà Windows cấm ghi đè .exe đang chạy lại CHO PHÉP rename
@@ -667,10 +667,18 @@ pub fn serve(idle: Duration) -> Result<()> {
     // Ghim ở đây không đóng được đường "thay exe rồi để client `schtasks /run`" — cùng
     // quyền ghi ấy đã đủ làm việc đó — nhưng nó bỏ cửa sổ tráo-giữa-đời, gần như miễn phí.
     let exe = std::env::current_exe().context("không xác định được đường dẫn tongue")?;
-    serve_with(idle, Arc::new(move |args: &[String]| run_child(&exe, args)))
+    serve_with(
+        idle,
+        Arc::new(move |args: &[String]| run_child(&exe, args)),
+        listen,
+    )
 }
 
-fn serve_with(idle: Duration, handler: Handler) -> Result<()> {
+fn serve_with(
+    idle: Duration,
+    handler: Handler,
+    listen: Option<std::net::SocketAddr>,
+) -> Result<()> {
     if in_service_session() {
         bail!(
             "agent phải chạy TRONG session của người dùng, không phải session 0 — chính nó \
@@ -692,6 +700,20 @@ fn serve_with(idle: Duration, handler: Handler) -> Result<()> {
     // nhau trên cùng một cửa sổ foreground, và trên macOS đã đo được hai tiến trình độc
     // lập cách nhau 495 ms cùng bắn chord rồi cả hai thoát 1.
     let serial = Arc::new(Mutex::new(()));
+
+    // Cửa thứ hai, cho tunnel ngược. Bind ĐỒNG BỘ và lỗi được propagate: một cửa
+    // vắng mặt trong im lặng nghĩa là client treo ở `connect` mà không ai biết vì
+    // sao. Dùng CHUNG `serial`, `inflight` và `last` với đường pipe — một reaper,
+    // một khoá thực thi, một vòng đời.
+    if let Some(addr) = listen {
+        super::tcp::spawn(
+            addr,
+            handler.clone(),
+            serial.clone(),
+            inflight.clone(),
+            last.clone(),
+        )?;
+    }
 
     eprintln!("tongue agent: đang nghe {name}");
     let mut first = true;

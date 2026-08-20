@@ -43,7 +43,17 @@ enum Cmd {
     /// Phải chạy TRONG session của người dùng — chính nó là cây cầu qua ranh giới
     /// đó. Xem `src/backend/windows/pipe.rs`.
     #[cfg(windows)]
-    Agent,
+    Agent {
+        /// Nghe thêm TCP trên địa chỉ này (CHỈ loopback), cho một tunnel ngược
+        /// `ssh -R`. Vắng cờ = chỉ có named pipe, y như trước.
+        ///
+        /// Tồn tại vì đường pipe phải đi qua session 0, và mọi lời gọi ở đó trả giá
+        /// một lần khởi động PowerShell — 293 ms trên tổng 656 ms một chặng, đo trên
+        /// a14 20/08/2026. Tunnel không sinh shell nào và đầu này của ống đã ở trong
+        /// session của người dùng: 11.6 ms.
+        #[arg(long, value_name = "ADDR")]
+        listen: Option<String>,
+    },
 }
 
 /// Ở session 0 (SSH của Windows) thì mọi thứ tongue cần đều nằm sai phía một bức
@@ -200,9 +210,21 @@ fn run() -> anyhow::Result<()> {
             Ok(())
         }
         #[cfg(windows)]
-        Some(Cmd::Agent) => backend::windows::pipe::serve(std::time::Duration::from_millis(
-            cfg.windows.agent_idle_ms,
-        )),
+        Some(Cmd::Agent { listen }) => {
+            // Phân giải TRƯỚC khi mở pipe: một địa chỉ gõ sai phải chết ngay lúc khởi
+            // động, chứ không phải im lặng thành "agent chạy mà tunnel không tới được".
+            let addr =
+                match listen {
+                    None => None,
+                    Some(a) => Some(a.parse::<std::net::SocketAddr>().map_err(|e| {
+                        anyhow::anyhow!("--listen `{a}` không phải <ip>:<cổng>: {e}")
+                    })?),
+                };
+            backend::windows::pipe::serve(
+                std::time::Duration::from_millis(cfg.windows.agent_idle_ms),
+                addr,
+            )
+        }
         Some(Cmd::Doctor { fix }) => {
             if doctor::run(fix, &cfg, make_ime(&cfg)?.as_ref())? {
                 std::process::exit(2);

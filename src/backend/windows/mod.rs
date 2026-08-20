@@ -1,5 +1,6 @@
 pub mod layout;
 pub mod pipe;
+pub mod tcp;
 pub mod vkey;
 
 use windows_sys::Win32::System::RemoteDesktop::ProcessIdToSessionId;
