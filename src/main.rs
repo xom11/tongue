@@ -86,10 +86,12 @@ fn maybe_forward() -> Option<std::process::ExitCode> {
     let budget = std::time::Duration::from_millis(cfg.windows.agent_timeout_ms);
 
     let mut bridge = pipe::forward(&args, budget);
-    // Không tự ĐĂNG KÝ task (bán kính ảnh hưởng lớn hơn hẳn "đổi chế độ gõ"), chỉ CHẠY
-    // một task đã tồn tại. Client ở session 0 vốn không spawn được vào session 1 — đó là
-    // cả tiền đề của việc này — nên Task Scheduler là cửa duy nhất.
-    if matches!(bridge, Ok(Bridge::Absent)) && !task.is_empty() {
+    // Một tên MỒI không chiếm tên thật của agent, nên agent vẫn khởi động được. Vì vậy
+    // `Foreign` cũng phải đi qua đường hồi sinh y như `Absent` — nếu không thì ai giữ
+    // được một tên `tongue.<SID>.<n>` bất kỳ sẽ khoá vĩnh viễn cả cầu, kể cả khi agent
+    // thật chỉ đang ngủ. Tái hiện trên a14 20/08/2026 rồi vá theo đúng thứ tự đó.
+    let squatted = matches!(bridge, Ok(Bridge::Foreign(_)));
+    if matches!(bridge, Ok(Bridge::Absent) | Ok(Bridge::Foreign(_))) && !task.is_empty() {
         // `schtasks` là tiến trình ngắn và `.output()` cấp cho nó pipe riêng; tiến trình
         // task thì do Task Scheduler sinh ra chứ không phải do ta, nên không thừa kế gì
         // của ta. Đây là lý do chỗ này KHÔNG cần `spawn_no_inherit` như vkey.rs.
@@ -104,7 +106,9 @@ fn maybe_forward() -> Option<std::process::ExitCode> {
         let until = std::time::Instant::now() + std::time::Duration::from_secs(3);
         loop {
             bridge = pipe::forward(&args, budget);
-            if !matches!(bridge, Ok(Bridge::Absent)) || std::time::Instant::now() >= until {
+            if !matches!(bridge, Ok(Bridge::Absent) | Ok(Bridge::Foreign(_)))
+                || std::time::Instant::now() >= until
+            {
                 break;
             }
             std::thread::sleep(std::time::Duration::from_millis(120));
@@ -113,12 +117,29 @@ fn maybe_forward() -> Option<std::process::ExitCode> {
 
     match bridge {
         Ok(Bridge::Reply(r)) => {
+            // Đi được rồi vẫn phải nói: một pipe mang tên bạn mà chủ không phải bạn là
+            // chuyện cần biết, kể cả khi agent thật vừa lên và phục vụ xong.
+            if squatted {
+                eprintln!(
+                    "tongue: cảnh báo — có pipe mang tên của bạn mà chủ không phải bạn; \
+                     agent thật đã khởi động và lệnh này đi qua nó. Xem `tongue doctor`."
+                );
+            }
             let _ = std::io::stdout().write_all(&r.stdout);
             let _ = std::io::stderr().write_all(&r.stderr);
             Some(ExitCode::from(r.code))
         }
         Ok(Bridge::Absent) => {
             eprintln!("tongue: {}", pipe::service_session_hint(&task));
+            Some(ExitCode::from(2))
+        }
+        Ok(Bridge::Foreign(sessions)) => {
+            eprintln!(
+                "tongue: có pipe mang tên của bạn ở session {sessions:?} mà KHÔNG cái nào \
+                 chứng minh được là agent của bạn — chủ nó lệch SID, hoặc không đọc nổi chủ. \
+                 KHÔNG gửi lệnh vào đó. Đã thử khởi động agent thật nhưng vẫn không thấy. \
+                 Xem `tongue doctor`."
+            );
             Some(ExitCode::from(2))
         }
         Ok(Bridge::Ambiguous(sessions)) => {

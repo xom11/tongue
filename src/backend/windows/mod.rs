@@ -14,10 +14,14 @@ use windows_sys::Win32::System::Threading::GetCurrentProcessId;
 /// read_state() thấy section trống nên kết luận "VKey chưa chạy", rồi set(true) đi
 /// spawn một VKey THỨ HAI trong session 0. Nó không hook được desktop nào, chỉ ngồi đó
 /// làm rác và khiến `tongue status` báo một trạng thái hoàn toàn tưởng tượng.
+/// API lỗi thì trả TRUE, không phải false. Không biết mình ở session nào mà đoán
+/// "interactive" là dựng lại đúng kiểu hỏng mô tả ở trên; đoán "service" thì tệ nhất
+/// là một câu lỗi thừa kèm lối đi qua agent. Hai chiều sai không cân nhau, nên nghiêng
+/// về chiều rẻ. `current_session()` trong `pipe.rs` propagate lỗi cùng một tinh thần.
 pub(crate) fn in_service_session() -> bool {
     let mut sid = 0u32;
     let ok = unsafe { ProcessIdToSessionId(GetCurrentProcessId(), &mut sid) };
-    ok != 0 && sid == 0
+    ok == 0 || sid == 0
 }
 
 pub(crate) const SERVICE_SESSION_ERR: &str =

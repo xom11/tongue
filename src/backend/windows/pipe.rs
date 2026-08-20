@@ -97,6 +97,13 @@ pub enum Bridge {
     /// Nhiều hơn một agent (hai phiên cùng user). KHÔNG tự chọn — lái nhầm session
     /// nghĩa là đổi bộ gõ của một desktop khác, im lặng.
     Ambiguous(Vec<u32>),
+    /// Có pipe mang tên ta mà không cái nào chứng minh được là agent của ta.
+    ///
+    /// KHÁC `Absent`, và khác biệt đó là lối thoát khỏi một DoS vĩnh viễn: tên mồi
+    /// không chiếm tên THẬT của agent, nên agent vẫn khởi động được. Gộp vào một lỗi
+    /// cứng là để một mồi biết tự nối lại khoá luôn cả đường hồi sinh — người gọi phải
+    /// vẫn thử `schtasks /run` rồi hỏi lại. Chỉ khi hỏi lại vẫn thế mới là lỗi.
+    Foreign(Vec<u32>),
     Reply(Reply),
 }
 
@@ -302,37 +309,47 @@ fn list_agent_sessions(sid: &str) -> Vec<u32> {
     out
 }
 
-/// Mở pipe. `None` = tên đó không có ai nghe.
+/// Một lượt `CreateFileW` DUY NHẤT, không chờ. `Err` mang GetLastError để người gọi
+/// phân biệt được `ERROR_PIPE_BUSY` với "không có ai nghe".
+fn try_open(name: &str) -> std::result::Result<HANDLE, u32> {
+    let w = wide(name);
+    let h = unsafe {
+        CreateFileW(
+            w.as_ptr(),
+            GENERIC_READ | GENERIC_WRITE,
+            0,
+            null_mut(),
+            OPEN_EXISTING,
+            // SECURITY_SQOS_PRESENT|SECURITY_IDENTIFICATION: nếu ai đó CHIẾM được
+            // tên pipe này thì họ chỉ nhận identification token, không
+            // `ImpersonateNamedPipeClient` để mượn danh tính ta được. Phiên SSH của
+            // một admin trên Win32-OpenSSH thường mang token elevated, nên vế đó
+            // không phải giả thuyết — đây đúng họ lỗi "Potato". Cũng chính vì thế
+            // KHÔNG dùng `CallNamedPipeW`/`TransactNamedPipe` dù chúng gọn hơn: hai
+            // hàm đó không cho khai SQOS.
+            FILE_ATTRIBUTE_NORMAL | SECURITY_SQOS_PRESENT | SECURITY_IDENTIFICATION,
+            null_mut(),
+        )
+    };
+    if h != INVALID_HANDLE_VALUE {
+        Ok(h)
+    } else {
+        Err(unsafe { GetLastError() })
+    }
+}
+
+/// Mở pipe, CHỜ khi mọi instance đang bận. `None` = tên đó không có ai nghe.
 fn open_pipe(name: &str, deadline: Instant) -> Option<HANDLE> {
     let w = wide(name);
     loop {
-        let h = unsafe {
-            CreateFileW(
-                w.as_ptr(),
-                GENERIC_READ | GENERIC_WRITE,
-                0,
-                null_mut(),
-                OPEN_EXISTING,
-                // SECURITY_SQOS_PRESENT|SECURITY_IDENTIFICATION: nếu ai đó CHIẾM được
-                // tên pipe này thì họ chỉ nhận identification token, không
-                // `ImpersonateNamedPipeClient` để mượn danh tính ta được. Phiên SSH của
-                // một admin trên Win32-OpenSSH thường mang token elevated, nên vế đó
-                // không phải giả thuyết — đây đúng họ lỗi "Potato". Cũng chính vì thế
-                // KHÔNG dùng `CallNamedPipeW`/`TransactNamedPipe` dù chúng gọn hơn: hai
-                // hàm đó không cho khai SQOS.
-                FILE_ATTRIBUTE_NORMAL | SECURITY_SQOS_PRESENT | SECURITY_IDENTIFICATION,
-                null_mut(),
-            )
-        };
-        if h != INVALID_HANDLE_VALUE {
-            return Some(h);
-        }
-        // BUSY = có agent, chỉ là mọi instance đang bận. Đây KHÔNG phải "không có
-        // agent": agent phục vụ tuần tự, mà một lượt có thể tốn tới ~6s (VKey
-        // cold-start 5s + verify 1s), và tongue.nvim bắn hai lời gọi tuần tự mỗi lần
-        // rời Insert. Trả "không có agent" ở đây là câu lỗi sai hoàn toàn.
-        if unsafe { GetLastError() } != ERROR_PIPE_BUSY {
-            return None;
+        match try_open(name) {
+            Ok(h) => return Some(h),
+            // BUSY = có agent, chỉ là mọi instance đang bận. Đây KHÔNG phải "không có
+            // agent": agent phục vụ tuần tự, mà một lượt có thể tốn tới ~6s (VKey
+            // cold-start 5s + verify 1s), và tongue.nvim bắn hai lời gọi tuần tự mỗi
+            // lần rời Insert. Trả "không có agent" ở đây là câu lỗi sai hoàn toàn.
+            Err(e) if e != ERROR_PIPE_BUSY => return None,
+            Err(_) => {}
         }
         let left = deadline.saturating_duration_since(Instant::now());
         if left.is_zero() {
@@ -344,8 +361,67 @@ fn open_pipe(name: &str, deadline: Instant) -> Option<HANDLE> {
     }
 }
 
-/// SID chủ của tiến trình đang giữ đầu server. `None` = không xác minh được.
-fn server_sid(h: HANDLE) -> Option<String> {
+/// Trần số tên được thăm dò trong một lượt. Tên pipe là chuỗi tự do nên ai cũng tạo
+/// được hàng nghìn cái mang SID của người khác; không có trần thì vòng thăm dò dài
+/// bằng thứ kẻ tấn công muốn.
+const MAX_CANDIDATES: usize = 8;
+
+/// Kết cục thăm dò MỘT tên. Phân biệt được bốn thứ mà bản trước gộp làm hai.
+enum Probe {
+    /// Mở được, và chủ đầu server đúng là ta. Handle đi kèm để lượt trao đổi dùng
+    /// luôn — mở lại lần nữa là tự tạo một khe TOCTOU không cần thiết.
+    Ours(HANDLE),
+    /// Có người nghe nhưng KHÔNG chứng minh được là ta: chủ lệch SID, hoặc không đọc
+    /// nổi chủ. Hai ca đó gộp làm một là CỐ Ý — xem `probe`.
+    Foreign,
+    /// Mọi instance đang bận nên chưa cầm được handle để hỏi chủ.
+    Busy,
+    /// Không ai nghe tên này.
+    Vacant,
+}
+
+/// Thăm dò một tên: có agent CỦA TA đứng sau nó không? Không gửi byte nào.
+///
+/// **`server_sid()` trả `None` là KHÔNG TIN, không phải là tin.** Bản trước viết
+/// `if let Some(owner) = ... { if owner != sid { bail } }`, nên nhánh `None` — đúng
+/// nhánh của kẻ chiếm pipe mà client không đọc nổi tiến trình của họ — rơi thẳng
+/// xuống `exchange()`. Hàng rào chỉ bắn được với server cùng user, nơi nó là hằng đúng.
+///
+/// Danh tính lấy từ TIẾN TRÌNH giữ đầu server (`GetNamedPipeServerProcessId` +
+/// token), KHÔNG phải từ chủ sở hữu của pipe object. Đã đo trên a14 20/08/2026: token
+/// elevated có `Owner = S-1-5-32-544` (BUILTIN\Administrators), nên pipe do nó tạo
+/// mang owner Administrators chứ không mang SID người dùng — so owner với SID người
+/// dùng là so trượt ở mọi tiến trình elevated.
+fn probe(sid: &str, session: u32) -> Probe {
+    match try_open(&proto::pipe_name(sid, session)) {
+        Ok(h) => verify(h, sid, session),
+        Err(e) if e == ERROR_PIPE_BUSY => Probe::Busy,
+        Err(_) => Probe::Vacant,
+    }
+}
+
+/// Phần chung của `probe` và nhánh chờ-BUSY: đã cầm handle rồi thì hỏi danh tính.
+///
+/// Kiểm HAI vế, và vế thứ hai là thứ bịt được cả kẻ chiếm CÙNG user: cái tên
+/// `tongue.<sid>.<n>` tuyên bố một session, agent thật luôn nằm đúng trong session nó
+/// khai. Mồi trong PoC trên a14 do một tiến trình ở session 0 tạo nhưng đặt tên `.7`,
+/// nên chỉ cần đối chiếu là rụng. Chỉ so SID thì mồi cùng user vẫn lọt.
+fn verify(h: HANDLE, sid: &str, session: u32) -> Probe {
+    match server_identity(h) {
+        Some((owner, sess)) if owner == sid && sess == session => Probe::Ours(h),
+        _ => {
+            unsafe { CloseHandle(h) };
+            Probe::Foreign
+        }
+    }
+}
+
+/// SID chủ VÀ session của tiến trình đang giữ đầu server. `None` = không xác minh được.
+///
+/// Trả về cả session vì cái TÊN pipe đã tuyên bố một session (`tongue.<sid>.<n>`) và
+/// tuyên bố đó kiểm được: agent thật luôn nằm trong đúng session nó tự khai. Không đối
+/// chiếu thì một tên khai session không tồn tại vẫn được tính là agent — xem `probe`.
+fn server_identity(h: HANDLE) -> Option<(String, u32)> {
     unsafe {
         let mut pid = 0u32;
         if GetNamedPipeServerProcessId(h, &mut pid) == 0 {
@@ -355,9 +431,13 @@ fn server_sid(h: HANDLE) -> Option<String> {
         if p.is_null() {
             return None;
         }
-        let s = sid_of_process_handle(p).ok();
+        let sid = sid_of_process_handle(p).ok();
         CloseHandle(p);
-        s
+        let mut sess = 0u32;
+        if ProcessIdToSessionId(pid, &mut sess) == 0 {
+            return None;
+        }
+        sid.map(|s| (s, sess))
     }
 }
 
@@ -370,37 +450,67 @@ pub fn forward(args: &[String], budget: Duration) -> Result<Bridge> {
     if let Some(s) = console_session().filter(|s| *s != 0) {
         cands.push(s);
     }
-    let found = list_agent_sessions(&sid);
-    for s in &found {
-        if !cands.contains(s) {
-            cands.push(*s);
+    for s in list_agent_sessions(&sid) {
+        if !cands.contains(&s) {
+            cands.push(s);
         }
     }
-    if cands.len() > 1 && found.len() > 1 {
-        return Ok(Bridge::Ambiguous(found));
+    cands.truncate(MAX_CANDIDATES);
+
+    // Một TÊN không phải một AGENT, và quyết định `Ambiguous` là quyết định TỪ CHỐI —
+    // nuôi nó bằng phép đếm chưa xác thực là để người ngoài tắt cầu. Đã tái hiện trên
+    // a14 20/08/2026: một `NamedPipeServerStream` mang tên `tongue.<SID>.7`, không
+    // ConnectNamedPipe, không phục vụ gì, làm mọi `ssh a14 tongue …` thoát 2 kèm
+    // "có nhiều agent cùng lúc (session [1, 7])" trong khi agent thật vẫn khoẻ ở
+    // session 1. Kẻ tạo mồi KHÔNG phải đua với ai: session 7 không tồn tại nên agent
+    // thật chẳng bao giờ tranh cái tên đó, và mồi sống qua mọi lần agent restart.
+    //
+    // Nên đếm AGENT ĐÃ XÁC MINH, không đếm tên. Thăm dò không chờ trước, để một mồi
+    // giữ BUSY không ăn hết ngân sách của agent thật.
+    let mut ours: Vec<(u32, HANDLE)> = Vec::new();
+    let mut foreign: Vec<u32> = Vec::new();
+    let mut busy: Vec<u32> = Vec::new();
+    for s in &cands {
+        match probe(&sid, *s) {
+            Probe::Ours(h) => ours.push((*s, h)),
+            Probe::Foreign => foreign.push(*s),
+            Probe::Busy => busy.push(*s),
+            Probe::Vacant => {}
+        }
     }
 
-    for s in cands {
-        let name = proto::pipe_name(&sid, s);
-        let Some(h) = open_pipe(&name, deadline) else {
-            continue;
-        };
-        // Chiếm tên pipe là chuyện ai cũng làm được; tên chỉ chống TRÙNG, không chống
-        // CHIẾM. Lệch SID thì từ chối thẳng thay vì im lặng tin một câu trả lời bịa.
-        if let Some(owner) = server_sid(h) {
-            if owner != sid {
-                unsafe { CloseHandle(h) };
-                bail!(
-                    "có pipe mang tên của bạn nhưng chủ nó là SID {owner}, không phải {sid} \
-                     — ai đó đã chiếm tên `{name}`, KHÔNG gửi lệnh vào đó"
-                );
+    // Bận là trạng thái BÌNH THƯỜNG của agent thật (nó phục vụ tuần tự, một lượt tới
+    // ~6s), nên chỉ khi không có ứng viên rảnh nào mới bỏ tiền chờ.
+    if ours.is_empty() {
+        for s in busy {
+            let name = proto::pipe_name(&sid, s);
+            if let Some(h) = open_pipe(&name, deadline) {
+                match verify(h, &sid, s) {
+                    Probe::Ours(h) => ours.push((s, h)),
+                    _ => foreign.push(s),
+                }
             }
         }
+    }
+
+    let choice = proto::choose(ours.iter().map(|(s, _)| *s).collect(), foreign);
+    // `choose` chỉ trả `Use` khi có ĐÚNG một agent xác minh, nên `pop` ở đây là cái duy
+    // nhất. Mọi nhánh còn lại không dùng handle nào — đóng hết.
+    if let proto::Choice::Use(_) = choice {
+        let (_, h) = ours.pop().expect("choose trả Use thì ours không rỗng");
         let res = exchange(h, args, deadline);
         unsafe { CloseHandle(h) };
         return res.map(Bridge::Reply);
     }
-    Ok(Bridge::Absent)
+    for (_, h) in &ours {
+        unsafe { CloseHandle(*h) };
+    }
+    match choice {
+        proto::Choice::Use(_) => unreachable!("đã xử ở trên"),
+        proto::Choice::Ambiguous(v) => Ok(Bridge::Ambiguous(v)),
+        proto::Choice::Foreign(v) => Ok(Bridge::Foreign(v)),
+        proto::Choice::Absent => Ok(Bridge::Absent),
+    }
 }
 
 fn exchange(h: HANDLE, args: &[String], deadline: Instant) -> Result<Reply> {
@@ -514,17 +624,7 @@ type Handler = Arc<dyn Fn(&[String]) -> (u8, Vec<u8>, Vec<u8>) + Send + Sync>;
 /// (tác động lên LUỒNG GỌI) vẫn chạy trên main thread của một tiến trình mới, y như hôm
 /// nay; và config được đọc lại mỗi lần nên sửa `config.toml` ăn ngay, không phải khởi
 /// động lại agent.
-fn run_child(args: &[String]) -> (u8, Vec<u8>, Vec<u8>) {
-    let exe = match std::env::current_exe() {
-        Ok(p) => p,
-        Err(e) => {
-            return (
-                2,
-                Vec::new(),
-                format!("tongue agent: không xác định được đường dẫn tongue: {e}\n").into_bytes(),
-            )
-        }
-    };
+fn run_child(exe: &std::path::Path, args: &[String]) -> (u8, Vec<u8>, Vec<u8>) {
     match std::process::Command::new(exe)
         .args(args)
         .env(NO_FORWARD_ENV, "1")
@@ -544,7 +644,14 @@ fn run_child(args: &[String]) -> (u8, Vec<u8>, Vec<u8>) {
 }
 
 pub fn serve(idle: Duration) -> Result<()> {
-    serve_with(idle, Arc::new(run_child))
+    // Giải đường dẫn MỘT lần lúc khởi động, không mỗi request. `current_exe()` trên
+    // Windows là chuỗi ghim trong PEB lúc load, nhưng `Command::new` thì mở lại đường
+    // dẫn đó ở mỗi lượt — mà Windows cấm ghi đè .exe đang chạy lại CHO PHÉP rename
+    // (đúng thủ thuật updater), nên đường dẫn tráo được dưới chân một agent đang sống.
+    // Ghim ở đây không đóng được đường "thay exe rồi để client `schtasks /run`" — cùng
+    // quyền ghi ấy đã đủ làm việc đó — nhưng nó bỏ cửa sổ tráo-giữa-đời, gần như miễn phí.
+    let exe = std::env::current_exe().context("không xác định được đường dẫn tongue")?;
+    serve_with(idle, Arc::new(move |args: &[String]| run_child(&exe, args)))
 }
 
 fn serve_with(idle: Duration, handler: Handler) -> Result<()> {
@@ -743,8 +850,24 @@ pub fn diagnose_bridge(task: &str) -> Vec<Finding> {
         }),
     }
 
-    let found = list_agent_sessions(&sid);
-    match found.len() {
+    // Chia đúng cách client chia, nếu không thì doctor và client nói hai chuyện khác
+    // nhau về cùng một máy: trước đây một tên bị người khác chiếm được doctor báo
+    // `Ok "agent đang nghe"`, trong khi client thì từ chối.
+    let mut ours: Vec<u32> = Vec::new();
+    let mut foreign: Vec<u32> = Vec::new();
+    for s in list_agent_sessions(&sid).into_iter().take(MAX_CANDIDATES) {
+        match probe(&sid, s) {
+            Probe::Ours(h) => {
+                unsafe { CloseHandle(h) };
+                ours.push(s);
+            }
+            // Bận = agent thật đang phục vụ. Với chẩn đoán thì đó vẫn là "có agent".
+            Probe::Busy => ours.push(s),
+            Probe::Foreign => foreign.push(s),
+            Probe::Vacant => {}
+        }
+    }
+    match ours.len() {
         0 => fs.push(Finding {
             level: Level::Warn,
             msg: format!("không thấy agent nào — khởi động: schtasks /run /tn \"{task}\""),
@@ -753,18 +876,26 @@ pub fn diagnose_bridge(task: &str) -> Vec<Finding> {
             level: Level::Ok,
             msg: format!(
                 "agent đang nghe ở session {} ({})",
-                found[0],
-                proto::pipe_name(&sid, found[0])
+                ours[0],
+                proto::pipe_name(&sid, ours[0])
             ),
         }),
-        _ => fs.push(Finding {
+        n => fs.push(Finding {
             level: Level::Fail,
             msg: format!(
-                "có {} agent cùng lúc (session {found:?}) — client sẽ TỪ CHỐI chứ không tự \
-                 chọn; dừng bớt đi",
-                found.len()
+                "có {n} agent cùng lúc (session {ours:?}) — client sẽ TỪ CHỐI chứ không tự \
+                 chọn; dừng bớt đi"
             ),
         }),
+    }
+    if !foreign.is_empty() {
+        fs.push(Finding {
+            level: Level::Fail,
+            msg: format!(
+                "có pipe mang tên của bạn ở session {foreign:?} mà chủ KHÔNG phải bạn (hoặc \
+                 không đọc nổi chủ) — ai đó đã chiếm tên. Client sẽ từ chối gửi lệnh vào đó."
+            ),
+        });
     }
     fs
 }

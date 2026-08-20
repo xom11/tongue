@@ -49,8 +49,15 @@ pub fn session_of(entry: &str, sid: &str) -> Option<u32> {
 /// giao thức) nhưng subcommand ĐẦU phải nằm trong danh sách này.
 ///
 /// `agent` cố ý VẮNG MẶT: nó LÀ đầu kia của dây, chuyển tiếp nó là đệ quy không đáy.
-/// `--version` và `--help` cũng vắng mặt, và đó là chủ đích — chúng phải nói về
-/// binary bạn vừa gọi, vì đó chính là thứ cần biết khi đang gỡ một ca lệch phiên bản.
+///
+/// Danh sách này gác VỊ TRÍ 0 và chỉ vị trí 0. `tongue --help` không đi qua dây, nhưng
+/// `tongue status --help` thì CÓ — clap gắn `-h/--help` vào mọi subcommand và CLI này
+/// không đặt `DisableHelpFlag`, nên câu trả lời đến từ binary ở ĐẦU KIA. Đó là giới hạn
+/// đã biết, không phải sơ suất: quét toàn argv sẽ giết đúng tính chất "argv đi verbatim,
+/// thêm cờ mới không phải bump giao thức". Nó cũng không phải lỗ hổng — DACL owner-only
+/// cộng `PIPE_REJECT_REMOTE_CLIENTS` nghĩa là người gửi duy nhất là chính user. Ca thật
+/// sự cần "nói về binary vừa gọi" là lệch phiên bản, và ca đó đã được phục vụ ở chỗ
+/// khác: `handle_one` trả lời kèm PID và version của agent TRƯỚC khi chạy tiến trình con.
 pub const FORWARDABLE: &[&str] = &["vi", "en", "zh", "status", "doctor"];
 
 pub fn forwardable(args: &[String]) -> bool {
@@ -61,6 +68,35 @@ pub fn forwardable(args: &[String]) -> bool {
         // chứng là "set được mà không đọc được" -- rất khó lần ra.
         None => true,
         Some(a) => FORWARDABLE.contains(&a.as_str()),
+    }
+}
+
+/// Kết cục một lượt tra agent, sau khi đã thăm dò từng tên.
+///
+/// Tách ra khỏi `windows/pipe.rs` vì đây đúng là chỗ bug sống: quyết định TỪ CHỐI từng
+/// được nuôi bằng phép đếm TÊN, mà tên thì ai cũng tạo được. Ở đây nó thuần, nên kiểm
+/// được trên cả hai runner — còn nếu để trong `forward` thì muốn kiểm phải có hai tài
+/// khoản Windows và một desktop thật.
+#[derive(Debug, PartialEq, Eq)]
+pub enum Choice {
+    /// Đúng một agent ĐÃ XÁC MINH.
+    Use(u32),
+    /// Nhiều hơn một agent đã xác minh — từ chối, không tự chọn, vì lái nhầm session
+    /// nghĩa là đổi bộ gõ của một desktop khác.
+    Ambiguous(Vec<u32>),
+    /// Không cái nào xác minh được, mà có tên đang bị ai đó giữ.
+    Foreign(Vec<u32>),
+    Absent,
+}
+
+/// `ours` = session đã chứng minh chủ đúng là ta. `foreign` = tên có người nghe nhưng
+/// không chứng minh được (lệch SID, hoặc không đọc nổi chủ).
+pub fn choose(ours: Vec<u32>, foreign: Vec<u32>) -> Choice {
+    match ours.len() {
+        0 if foreign.is_empty() => Choice::Absent,
+        0 => Choice::Foreign(foreign),
+        1 => Choice::Use(ours[0]),
+        _ => Choice::Ambiguous(ours),
     }
 }
 
@@ -169,6 +205,35 @@ mod tests {
         // Lệnh trần thì CÓ đi được -- xem `lenh_doc_tran_cung_duoc_chuyen_tiep`.
         // Dòng này từng khẳng định ngược lại, và nó sai: `tongue` không tham số là
         // lệnh ĐỌC, không phải lệnh meta như `--version`.
+    }
+
+    /// Bài test chịu lực cho ca đã TÁI HIỆN trên a14 20/08/2026: một
+    /// `NamedPipeServerStream` mang tên `tongue.<SID>.7` — không ConnectNamedPipe,
+    /// không phục vụ gì, session 7 không tồn tại — làm mọi `ssh a14 tongue …` thoát 2
+    /// kèm "có nhiều agent cùng lúc (session [1, 7])", trong khi agent thật vẫn khoẻ ở
+    /// session 1. Kẻ tạo mồi không phải đua với ai và mồi sống qua mọi lần agent restart.
+    ///
+    /// Một cái tên KHÔNG phải một agent. Mồi phải bị bỏ qua, agent thật phải được dùng.
+    #[test]
+    fn moi_khong_lam_ket_agent_that() {
+        assert_eq!(choose(vec![1], vec![7]), Choice::Use(1));
+        assert_eq!(choose(vec![1], vec![5, 7, 9]), Choice::Use(1));
+    }
+
+    /// Hai agent THẬT thì vẫn phải từ chối — đó là hành vi đúng, không phải bug.
+    #[test]
+    fn hai_agent_da_xac_minh_thi_van_tu_choi() {
+        assert_eq!(choose(vec![1, 2], vec![]), Choice::Ambiguous(vec![1, 2]));
+        assert_eq!(choose(vec![1, 2], vec![7]), Choice::Ambiguous(vec![1, 2]));
+    }
+
+    /// Chỉ có tên của người khác: KHÔNG được rơi xuống `Absent`. Absent kéo theo
+    /// `schtasks /run` rồi thử lại — đi đánh thức agent trong khi thứ chắn đường là
+    /// pipe của người khác, và câu lỗi in ra sẽ chỉ sai chỗ.
+    #[test]
+    fn chi_co_ten_nguoi_khac_thi_khong_phai_absent() {
+        assert_eq!(choose(vec![], vec![7]), Choice::Foreign(vec![7]));
+        assert_eq!(choose(vec![], vec![]), Choice::Absent);
     }
 
     #[test]
