@@ -208,7 +208,7 @@ tự chuyển tiếp vào đó — không đổi lệnh, không thêm cờ.
 
 **Khởi động lười, không phải daemon.** Client ở session 0 tự chạy
 `schtasks /run /tn <agent_task>` khi không thấy pipe, và agent tự thoát sau
-`idle_exit_ms`. Một scheduled task, không watchdog: đây là request/response vài
+`agent_idle_ms`. Một scheduled task, không watchdog: đây là request/response vài
 lần một ngày do người gõ, không phải thứ phục vụ từng phím bấm. Agent cũng khoá
 cứng `tongue.exe` khi chạy, nên tự thoát là thứ giữ cho việc nâng cấp khỏi vướng.
 
@@ -216,7 +216,7 @@ cứng `tongue.exe` khi chạy, nên tự thoát là thứ giữ cho việc nân
 [windows]
 agent_task       = "\\TongueAgent"   # task mà client sẽ gọi khi không thấy pipe
 agent_timeout_ms = 15000            # phải LỚN hơn ca xấu nhất, xem dưới
-idle_exit_ms     = 600000
+agent_idle_ms    = 600000
 ```
 
 `agent_timeout_ms` **không** phải 2000 như phản xạ tự nhiên: `ensure_running` chờ

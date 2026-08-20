@@ -549,6 +549,22 @@ fn exchange(h: HANDLE, args: &[String], deadline: Instant) -> Result<Reply> {
 struct SendHandle(HANDLE);
 unsafe impl Send for SendHandle {}
 
+/// Một slot "đang phục vụ", trả lại khi luồng kết thúc — kể cả khi nó panic.
+struct InFlight(Arc<AtomicUsize>);
+
+impl InFlight {
+    fn new(c: Arc<AtomicUsize>) -> Self {
+        c.fetch_add(1, Ordering::SeqCst);
+        Self(c)
+    }
+}
+
+impl Drop for InFlight {
+    fn drop(&mut self) {
+        self.0.fetch_sub(1, Ordering::SeqCst);
+    }
+}
+
 fn create_instance(name: &str, sd: &SecDesc, first: bool) -> Result<HANDLE> {
     let w = wide(name);
     let sa = SECURITY_ATTRIBUTES {
@@ -699,22 +715,25 @@ fn serve_with(idle: Duration, handler: Handler) -> Result<()> {
         // Tạo instance kế tiếp NGAY sau khi có client, chứ không sau khi phục vụ xong:
         // instance hiện tại đã CONNECTED nên nếu đợi, tên pipe vẫn tồn tại nhưng mọi
         // client mới đều rơi vào ERROR_PIPE_BUSY suốt cả lượt phục vụ (tới ~6s).
-        let (h, last, inflight, serial, handler) = (
-            SendHandle(h),
-            last.clone(),
-            inflight.clone(),
-            serial.clone(),
-            handler.clone(),
-        );
+        let (h, last, serial, handler) =
+            (SendHandle(h), last.clone(), serial.clone(), handler.clone());
+        // Đếm NGAY, trước `spawn`. Để `fetch_add` bên trong closure thì giữa lúc
+        // `accept()` trả về (client ĐÃ nối) và lúc closure kịp chạy, `inflight` vẫn là
+        // 0 — reaper thức dậy đúng khe đó sẽ `exit(0)` trên một kết nối đang sống, và
+        // client nhận lỗi ghi rồi thoát 2.
+        let busy = InFlight::new(inflight.clone());
         std::thread::spawn(move || {
             let h = h;
-            inflight.fetch_add(1, Ordering::SeqCst);
+            // Khai SAU `h` nên drop TRƯỚC `h`, và quan trọng hơn: drop sau khi `last`
+            // đã cập nhật. Là guard chứ không phải `fetch_sub` trần vì `fetch_add` nay
+            // nằm ngoài closure — một panic trong `handle_one` mà không có Drop sẽ rò
+            // slot vĩnh viễn, và agent không bao giờ idle-exit nữa.
+            let _busy = busy;
             if let Err(e) = handle_one(h.0, &serial, &handler) {
                 eprintln!("tongue agent: bỏ qua một yêu cầu hỏng: {e:#}");
             }
             finish(h.0);
             *last.lock().unwrap() = Instant::now();
-            inflight.fetch_sub(1, Ordering::SeqCst);
         });
     }
 }
@@ -979,6 +998,31 @@ mod tests {
             "instance ĐẦU thứ hai phải trượt"
         );
         unsafe { CloseHandle(h) };
+    }
+
+    /// `fetch_add` nay nam NGOAI closure de bit khe reaper-giet-client-dang-noi, nen
+    /// duong tra slot phai chiu duoc ca panic. Khong co Drop thi mot panic trong
+    /// `handle_one` ro slot vinh vien va agent khong bao gio idle-exit nua.
+    #[test]
+    fn slot_duoc_tra_lai_ke_ca_khi_luong_panic() {
+        let c = Arc::new(AtomicUsize::new(0));
+        {
+            let _g = InFlight::new(c.clone());
+            assert_eq!(c.load(Ordering::SeqCst), 1, "new() phai dem len");
+        }
+        assert_eq!(c.load(Ordering::SeqCst), 0, "drop thuong phai tra slot");
+
+        let c2 = c.clone();
+        let r = std::panic::catch_unwind(move || {
+            let _g = InFlight::new(c2);
+            panic!("mo phong handle_one panic");
+        });
+        assert!(r.is_err(), "closure phai that su panic");
+        assert_eq!(
+            c.load(Ordering::SeqCst),
+            0,
+            "panic van phai tra slot -- neu khong, agent song mai"
+        );
     }
 
     #[test]
